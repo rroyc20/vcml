@@ -1,0 +1,23 @@
+ NOMBRE : yao-fig1
+ COMENTARIO : Yao et al. (2021) TR-B proxy (see scripts/generate_yao_existing_dat.py)
+ VERTICES : 10
+ ARISTAS_REQ : 3
+ ARISTAS_NOREQ : 8
+ VEHICULOS : 5
+ CAPACIDAD : 300
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 52
+ LISTA_ARISTAS_REQ :
+ ( 3, 8)   coste 10   demanda 51
+ ( 7, 9)   coste 32   demanda 48
+ ( 6, 10)   coste 10   demanda 54
+ LISTA_ARISTAS_NOREQ :
+ ( 1, 2)   coste 20
+ ( 2, 3)   coste 20
+ ( 3, 4)   coste 60
+ ( 4, 5)   coste 40
+ ( 5, 6)   coste 20
+ ( 6, 1)   coste 40
+ ( 2, 7)   coste 40
+ ( 7, 6)   coste 20
+ DEPOSITO :   1

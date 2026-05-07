@@ -1,0 +1,154 @@
+ NOMBRE : yao-westjordan-M
+ COMENTARIO : Yao et al. (2021) TR-B proxy (see scripts/generate_yao_existing_dat.py)
+ VERTICES : 55
+ ARISTAS_REQ : 23
+ ARISTAS_NOREQ : 119
+ VEHICULOS : 4
+ CAPACIDAD : 300
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 10487
+ LISTA_ARISTAS_REQ :
+ ( 17, 41)   coste 625   demanda 46
+ ( 17, 39)   coste 382   demanda 44
+ ( 39, 41)   coste 745   demanda 50
+ ( 17, 37)   coste 289   demanda 45
+ ( 38, 41)   coste 157   demanda 51
+ ( 6, 17)   coste 305   demanda 52
+ ( 11, 41)   coste 770   demanda 50
+ ( 17, 40)   coste 304   demanda 54
+ ( 37, 39)   coste 310   demanda 52
+ ( 12, 17)   coste 394   demanda 45
+ ( 17, 25)   coste 578   demanda 46
+ ( 18, 39)   coste 493   demanda 43
+ ( 23, 38)   coste 262   demanda 49
+ ( 41, 53)   coste 424   demanda 49
+ ( 41, 55)   coste 148   demanda 47
+ ( 2, 41)   coste 579   demanda 53
+ ( 17, 45)   coste 432   demanda 49
+ ( 17, 52)   coste 531   demanda 51
+ ( 18, 38)   coste 322   demanda 49
+ ( 30, 41)   coste 600   demanda 47
+ ( 31, 39)   coste 228   demanda 54
+ ( 37, 47)   coste 871   demanda 53
+ ( 41, 50)   coste 738   demanda 49
+ LISTA_ARISTAS_NOREQ :
+ ( 1, 7)   coste 494
+ ( 1, 9)   coste 291
+ ( 1, 25)   coste 391
+ ( 1, 32)   coste 506
+ ( 1, 52)   coste 698
+ ( 2, 8)   coste 71
+ ( 2, 13)   coste 488
+ ( 2, 20)   coste 122
+ ( 2, 46)   coste 405
+ ( 3, 11)   coste 168
+ ( 3, 13)   coste 124
+ ( 3, 21)   coste 327
+ ( 4, 25)   coste 386
+ ( 4, 39)   coste 855
+ ( 5, 15)   coste 1034
+ ( 5, 19)   coste 548
+ ( 5, 41)   coste 670
+ ( 6, 8)   coste 216
+ ( 6, 13)   coste 445
+ ( 6, 16)   coste 196
+ ( 6, 27)   coste 100
+ ( 6, 31)   coste 400
+ ( 6, 34)   coste 140
+ ( 7, 20)   coste 500
+ ( 7, 27)   coste 479
+ ( 7, 30)   coste 735
+ ( 7, 32)   coste 844
+ ( 7, 43)   coste 747
+ ( 7, 45)   coste 889
+ ( 8, 15)   coste 616
+ ( 8, 34)   coste 330
+ ( 8, 44)   coste 464
+ ( 8, 46)   coste 432
+ ( 8, 47)   coste 530
+ ( 9, 19)   coste 77
+ ( 9, 27)   coste 225
+ ( 9, 39)   coste 399
+ ( 9, 43)   coste 496
+ ( 10, 23)   coste 618
+ ( 10, 34)   coste 402
+ ( 10, 49)   coste 83
+ ( 10, 53)   coste 421
+ ( 11, 19)   coste 572
+ ( 11, 26)   coste 701
+ ( 11, 33)   coste 686
+ ( 11, 40)   coste 355
+ ( 11, 54)   coste 302
+ ( 12, 23)   coste 365
+ ( 12, 37)   coste 431
+ ( 12, 45)   coste 401
+ ( 12, 52)   coste 483
+ ( 12, 55)   coste 738
+ ( 14, 34)   coste 356
+ ( 14, 36)   coste 557
+ ( 14, 37)   coste 313
+ ( 14, 50)   coste 71
+ ( 14, 51)   coste 351
+ ( 15, 31)   coste 858
+ ( 15, 47)   coste 915
+ ( 16, 40)   coste 291
+ ( 16, 53)   coste 191
+ ( 17, 51)   coste 327
+ ( 18, 22)   coste 283
+ ( 18, 24)   coste 140
+ ( 18, 29)   coste 109
+ ( 18, 52)   coste 815
+ ( 18, 53)   coste 288
+ ( 19, 23)   coste 187
+ ( 19, 55)   coste 481
+ ( 21, 31)   coste 645
+ ( 21, 36)   coste 477
+ ( 21, 42)   coste 735
+ ( 22, 35)   coste 541
+ ( 22, 42)   coste 550
+ ( 22, 46)   coste 230
+ ( 23, 24)   coste 324
+ ( 23, 26)   coste 298
+ ( 23, 42)   coste 352
+ ( 23, 43)   coste 530
+ ( 24, 30)   coste 597
+ ( 24, 38)   coste 262
+ ( 25, 40)   coste 504
+ ( 25, 43)   coste 677
+ ( 25, 53)   coste 284
+ ( 26, 27)   coste 333
+ ( 26, 28)   coste 892
+ ( 26, 47)   coste 417
+ ( 27, 55)   coste 572
+ ( 28, 46)   coste 1142
+ ( 28, 47)   coste 1202
+ ( 28, 50)   coste 722
+ ( 28, 52)   coste 785
+ ( 29, 53)   coste 397
+ ( 30, 37)   coste 479
+ ( 30, 51)   coste 508
+ ( 31, 33)   coste 717
+ ( 31, 54)   coste 690
+ ( 32, 44)   coste 333
+ ( 33, 37)   coste 793
+ ( 33, 48)   coste 904
+ ( 33, 49)   coste 565
+ ( 33, 55)   coste 200
+ ( 34, 40)   coste 429
+ ( 35, 39)   coste 376
+ ( 36, 49)   coste 704
+ ( 37, 46)   coste 772
+ ( 38, 44)   coste 958
+ ( 38, 45)   coste 792
+ ( 38, 48)   coste 820
+ ( 38, 49)   coste 484
+ ( 39, 42)   coste 666
+ ( 40, 43)   coste 705
+ ( 40, 49)   coste 737
+ ( 42, 54)   coste 445
+ ( 45, 47)   coste 828
+ ( 47, 50)   coste 624
+ ( 48, 50)   coste 272
+ ( 49, 51)   coste 731
+ ( 54, 55)   coste 514
+ DEPOSITO :   1

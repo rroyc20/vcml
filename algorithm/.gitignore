@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# Editor / local workspace
+.cursor/
+.venv/
+venv/
+
+# Native build artifacts
+*.so
+*.dylib
+
+# Local outputs
+newest_test.json
+nocut_nols.jsonl
+data/generated/

@@ -1,0 +1,80 @@
+ NOMBRE : yao-westjordan-S
+ COMENTARIO : Yao et al. (2021) TR-B proxy (see scripts/generate_yao_existing_dat.py)
+ VERTICES : 27
+ ARISTAS_REQ : 11
+ ARISTAS_NOREQ : 57
+ VEHICULOS : 2
+ CAPACIDAD : 300
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 7752
+ LISTA_ARISTAS_REQ :
+ ( 7, 12)   coste 533   demanda 45
+ ( 12, 27)   coste 669   demanda 50
+ ( 13, 19)   coste 901   demanda 46
+ ( 19, 27)   coste 1124   demanda 56
+ ( 2, 12)   coste 403   demanda 44
+ ( 2, 19)   coste 904   demanda 53
+ ( 7, 13)   coste 790   demanda 53
+ ( 7, 27)   coste 957   demanda 52
+ ( 13, 22)   coste 437   demanda 49
+ ( 19, 21)   coste 823   demanda 52
+ ( 22, 27)   coste 211   demanda 50
+ LISTA_ARISTAS_NOREQ :
+ ( 1, 10)   coste 469
+ ( 2, 3)   coste 598
+ ( 2, 8)   coste 964
+ ( 2, 24)   coste 285
+ ( 2, 26)   coste 255
+ ( 3, 12)   coste 652
+ ( 3, 14)   coste 154
+ ( 3, 22)   coste 458
+ ( 3, 27)   coste 664
+ ( 4, 6)   coste 836
+ ( 4, 7)   coste 1035
+ ( 4, 11)   coste 185
+ ( 4, 21)   coste 788
+ ( 5, 21)   coste 1052
+ ( 5, 26)   coste 593
+ ( 5, 27)   coste 823
+ ( 6, 9)   coste 376
+ ( 6, 11)   coste 750
+ ( 6, 16)   coste 696
+ ( 6, 23)   coste 445
+ ( 6, 26)   coste 707
+ ( 7, 10)   coste 432
+ ( 7, 11)   coste 851
+ ( 7, 16)   coste 474
+ ( 8, 10)   coste 668
+ ( 8, 12)   coste 625
+ ( 8, 13)   coste 948
+ ( 8, 26)   coste 1173
+ ( 9, 10)   coste 504
+ ( 9, 11)   coste 775
+ ( 9, 17)   coste 902
+ ( 9, 19)   coste 433
+ ( 10, 24)   coste 190
+ ( 11, 18)   coste 744
+ ( 12, 16)   coste 323
+ ( 12, 18)   coste 290
+ ( 12, 25)   coste 345
+ ( 13, 15)   coste 269
+ ( 13, 17)   coste 391
+ ( 13, 18)   coste 617
+ ( 14, 17)   coste 607
+ ( 14, 20)   coste 424
+ ( 14, 21)   coste 93
+ ( 14, 22)   coste 497
+ ( 14, 27)   coste 708
+ ( 15, 18)   coste 363
+ ( 15, 23)   coste 455
+ ( 17, 19)   coste 1049
+ ( 19, 23)   coste 367
+ ( 19, 26)   coste 1124
+ ( 20, 24)   coste 213
+ ( 20, 25)   coste 160
+ ( 21, 22)   coste 404
+ ( 21, 23)   coste 918
+ ( 22, 24)   coste 218
+ ( 22, 25)   coste 314
+ ( 23, 25)   coste 607
+ DEPOSITO :   1
