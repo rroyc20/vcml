@@ -35,10 +35,10 @@ DEFAULT_INSPECT_ARGS = [
     "--cut-pricing-dual-tol", "1e-15",  # any nonnegative float
 
     ### 3. Pricing
-    "--pricing-method", "cpp_dp_lex",  # labeling, dp, cpp_dp, cpp_dp_lex, cpp_ng
-    "--pricing-ng-size", "10",  # any positive int, mainly for cpp_ng
+    "--pricing-method", "cpp_ng",  # labeling, dp, cpp_dp, cpp_dp_lex, cpp_ng
+    "--pricing-ng-size", "5",  # any positive int, mainly for cpp_ng
     "--cpp-ng-empty-fallback", "none",  # labeling, dp, none
-    "--cpp-core-variant", "default",  # default, rc_load_dom
+    "--cpp-core-variant", "rc_load_dom",  # default, rc_load_dom
     "--yao-pricing", "1",  # 0, 1
     "--use-coeff-dominance-filter", "0",  # 0, 1
     "--coeff-dom-obj-tol", "1e-9",  # any nonnegative float
