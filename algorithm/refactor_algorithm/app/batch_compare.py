@@ -43,6 +43,16 @@ class BatchCompareConfig:
     yao_style_pricing: int = 1
     pricing_ng_size: int = 8
     use_capacity_cuts: int = 0
+    use_sri_cuts: int = 0
+    sri_cardinality: int = 3
+    enable_sri: int = 1
+    root_only_sri: int = 1
+    max_sri_rounds: int = 3
+    max_cuts_per_round: int = 20
+    max_cuts_per_day: int = 5
+    min_sri_violation: float = 1e-4
+    enable_sri_similarity_filter: int = 1
+    max_shared_edges_between_sri3: int = 1
     cut_root_only: int = 1
     cut_separation_max_depth: int | None = None
 
@@ -104,8 +114,28 @@ def run_existing_batch(config: BatchCompareConfig) -> List[Dict[str, Any]]:
                 phase1_col_cap=config.phase1_col_cap,
                 use_aggregation=int(config.use_aggregation),
                 yao_style_pricing=int(config.yao_style_pricing),
+                use_sri_cuts=int(config.use_sri_cuts),
+                sri_cardinality=int(config.sri_cardinality),
+                enable_sri=int(config.enable_sri),
+                root_only_sri=int(config.root_only_sri),
+                max_sri_rounds=int(config.max_sri_rounds),
+                max_cuts_per_round=int(config.max_cuts_per_round),
+                max_cuts_per_day=int(config.max_cuts_per_day),
+                min_sri_violation=float(config.min_sri_violation),
+                enable_sri_similarity_filter=int(config.enable_sri_similarity_filter),
+                max_shared_edges_between_sri3=int(config.max_shared_edges_between_sri3),
             )
             instance["use_capacity_cuts"] = int(config.use_capacity_cuts)
+            instance["use_sri_cuts"] = int(config.use_sri_cuts)
+            instance["sri_cardinality"] = int(config.sri_cardinality)
+            instance["enable_sri"] = int(config.enable_sri)
+            instance["root_only_sri"] = int(config.root_only_sri)
+            instance["max_sri_rounds"] = int(config.max_sri_rounds)
+            instance["max_cuts_per_round"] = int(config.max_cuts_per_round)
+            instance["max_cuts_per_day"] = int(config.max_cuts_per_day)
+            instance["min_sri_violation"] = float(config.min_sri_violation)
+            instance["enable_sri_similarity_filter"] = int(config.enable_sri_similarity_filter)
+            instance["max_shared_edges_between_sri3"] = int(config.max_shared_edges_between_sri3)
             instance["cut_root_only"] = int(config.cut_root_only)
             if config.cut_separation_max_depth is not None:
                 instance["cut_separation_max_depth"] = int(config.cut_separation_max_depth)

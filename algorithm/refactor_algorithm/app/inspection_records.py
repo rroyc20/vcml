@@ -56,6 +56,10 @@ class NodeRecord:
     solve_cut_separation_time_s: float = 0.0
     solve_pricing_time_s: float = 0.0
     solve_addcol_time_s: float = 0.0
+    sri_rounds: int = 0
+    sri_cuts_added: int = 0
+    sri_separation_time_s: float = 0.0
+    sri_round_logs: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -69,8 +73,6 @@ class NodeRecord:
             "open_nodes_at_entry": self.open_nodes_at_entry,
             "col_pool_size_at_entry": self.col_pool_size_at_entry,
             "active_constraints": self.active_constraints,
-            "active_cuts": self.active_cuts,
-            "cuts_added_this_node": self.cuts_added_this_node,
             "total_cg_iters": self.total_cg_iters,
             "total_cols_added": self.total_cols_added,
             "total_cols_generated": self.total_cols_generated,
@@ -89,6 +91,10 @@ class NodeRecord:
             "solve_cut_separation_time_s": round(self.solve_cut_separation_time_s, 6),
             "solve_pricing_time_s": round(self.solve_pricing_time_s, 6),
             "solve_addcol_time_s": round(self.solve_addcol_time_s, 6),
+            "sri_rounds": self.sri_rounds,
+            "sri_cuts_added": self.sri_cuts_added,
+            "sri_separation_time_s": round(self.sri_separation_time_s, 6),
+            "sri_round_logs": self.sri_round_logs,
             "cg_iters": [
                 {
                     "iter": record.cg_iter,
@@ -135,4 +141,3 @@ def branch_candidates_equal(left: Optional[Dict[str, Any]], right: Optional[Dict
         return False
     keys = ("family", "day", "driver", "value", "target")
     return all(left.get(key) == right.get(key) for key in keys)
-

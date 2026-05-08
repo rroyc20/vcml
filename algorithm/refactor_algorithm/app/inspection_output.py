@@ -35,6 +35,11 @@ def print_node_summary(record: NodeRecord) -> None:
             f"rmp_all={record.solve_rmp_time_s:.3f}s  prc={record.solve_pricing_time_s:.3f}s  "
             f"addcol={record.solve_addcol_time_s:.3f}s  (incl. outside per-iter table)"
         )
+    if record.sri_rounds > 0 or record.sri_cuts_added > 0 or record.sri_separation_time_s > 0.0:
+        print(
+            f"  SRI     rounds={record.sri_rounds}  added={record.sri_cuts_added}  "
+            f"sep={record.sri_separation_time_s:.3f}s"
+        )
     if record.rmp_failure_msg:
         print(f"  RMP     failure: {record.rmp_failure_msg}")
     print(f"  Model   vars={record.model_nvars}  constrs={record.model_ncons}")
@@ -47,14 +52,15 @@ def print_node_summary(record: NodeRecord) -> None:
                 f"day={constraint['day']}  target={constraint['target']}"
             )
 
-    if record.active_cuts:
-        print(f"  Active cuts ({len(record.active_cuts)}):")
-        for cut in record.active_cuts:
-            print(f"    [{cut.get('family')}]  {cut.get('cname')}  key={cut.get('key')}")
-    if record.cuts_added_this_node:
-        print(f"  Cuts added in this node ({len(record.cuts_added_this_node)}):")
-        for cut in record.cuts_added_this_node:
-            print(f"    [+][{cut.get('family')}]  {cut.get('cname')}  key={cut.get('key')}")
+    if record.sri_round_logs:
+        for sri_log in record.sri_round_logs:
+            print(
+                f"  [SRI] round={int(sri_log.get('round', 0))} found={int(sri_log.get('found', 0))} "
+                f"selected={int(sri_log.get('selected', 0))} added={int(sri_log.get('added', 0))} "
+                f"max_viol={float(sri_log.get('max_violation', 0.0)):.6g} "
+                f"avg_viol={float(sri_log.get('avg_violation', 0.0)):.6g} "
+                f"per_day={dict(sri_log.get('per_day', {}) or {})}"
+            )
 
     if record.cg_iters:
         print("  CG iterations:  ph1=Y → cover artificials still >0 right after that RMP solve (not separate Simplex Phase I)")
@@ -253,4 +259,3 @@ def print_pricing_breakdown(profile: Dict[str, Any], pricing_time_s: float) -> N
             f"    (참고) node cpp try 전체 pricing_prof_cpp_core_s={core_try:.4f}s  "
             f"inproc 합={inproc_sum:.4f}s  Δ≈래퍼·import={wrapper_gap:.4f}s"
         )
-

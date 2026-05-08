@@ -359,6 +359,9 @@ def solve_with_global_rmp_algorithm(inst: Dict[str, Any]) -> Dict[str, Any]:
     use_ub_zero = bool(int(inst.get("use_ub_zero_branching", 0)))
     partial_pricing_ratio = float(inst.get("partial_pricing_ratio", 1.0))
     phase1_col_cap = int(inst.get("phase1_col_cap", 3))
+    enable_sri = bool(int(inst.get("enable_sri", inst.get("use_sri_cuts", 0))))
+    root_only_sri = bool(int(inst.get("root_only_sri", 1)))
+    max_sri_rounds = int(inst.get("max_sri_rounds", 3))
 
     tree = GlobalRMPBnBTree(
         root_node=root,
@@ -376,6 +379,9 @@ def solve_with_global_rmp_algorithm(inst: Dict[str, Any]) -> Dict[str, Any]:
             use_ub_zero_branching=use_ub_zero,
             partial_pricing_ratio=partial_pricing_ratio,
             phase1_col_cap=phase1_col_cap,
+            enable_sri=enable_sri,
+            root_only_sri=root_only_sri,
+            max_sri_rounds=max_sri_rounds,
         ),
         selector=selector,
     )

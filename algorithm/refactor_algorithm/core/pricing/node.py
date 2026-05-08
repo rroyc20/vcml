@@ -54,6 +54,10 @@ class BnBConfig:
     # limit columns added per pricing call to this value (0 = no cap).
     # Prevents column explosion caused by inflated duals (~1e5) during Phase-I.
     phase1_col_cap: int = 3
+    # Deferred SRI separation (run only after current-cut CG convergence).
+    enable_sri: bool = True
+    root_only_sri: bool = True
+    max_sri_rounds: int = 3
 
 
 class DualStabilizer:
@@ -746,6 +750,7 @@ class BnBNode:
             "cut_separation_time_s": 0.0,
             "pricing_time_s": 0.0,
             "addcol_time_s": 0.0,
+            "sri_separation_time_s": 0.0,
             "labels_generated": 0,
             "labels_expanded": 0,
             "backtrack_pruned": 0,
@@ -761,6 +766,9 @@ class BnBNode:
             "zero_add_iterations": 0,
             "hit_cg_iteration_limit": False,
             "hit_time_limit": False,
+            "sri_rounds": 0,
+            "sri_cuts_added": 0,
+            "sri_round_logs": [],
         }
 
         def _accumulate_addcol_stats() -> None:
@@ -771,14 +779,52 @@ class BnBNode:
             self.solve_stats["columns_skipped_duplicate"] += int(add_meta.get("skipped_duplicate", 0))
             self.solve_stats["columns_skipped_dominated"] += int(add_meta.get("skipped_dominated", 0))
 
+        def _reset_stabilizer() -> Optional[DualStabilizer]:
+            if bool(config.use_dual_stabilization):
+                return DualStabilizer(
+                    alpha=float(config.dual_stab_alpha),
+                    alpha_decay=float(config.dual_stab_alpha_decay),
+                    min_alpha=float(config.dual_stab_min_alpha),
+                )
+            return None
+
+        def _sri_enabled_for_node() -> bool:
+            inst = getattr(getattr(self, "rmp", None), "inst", {})
+            if isinstance(inst, dict):
+                inst_enabled = bool(int(inst.get("enable_sri", inst.get("use_sri_cuts", 0))))
+            else:
+                inst_enabled = True
+            if not bool(config.enable_sri) or not inst_enabled:
+                return False
+            if bool(config.root_only_sri) and int(self.depth) > 0:
+                return False
+            return True
+
+        def _finalize_pending_sri_log(lp_value: float) -> None:
+            nonlocal pending_sri_log
+            if pending_sri_log is None:
+                return
+            pending_sri_log["lb_after_cg_convergence"] = float(lp_value)
+            try:
+                pending_sri_log["rmp_row_count_after_cg"] = int(self._get_gurobi_model().NumConstrs)
+            except Exception:
+                pending_sri_log["rmp_row_count_after_cg"] = None
+            pending_sri_log = None
+
+        def _is_pruned_by_bound(lp_value: float) -> bool:
+            try:
+                ub = float(incumbent_ub)
+                lb = float(lp_value)
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(ub) or not math.isfinite(lb):
+                return False
+            return lb >= ub - config.eps_integrality
+
         # ── Dual Stabilizer 초기화 ─────────────────────────────────────────
-        stabilizer: Optional[DualStabilizer] = None
-        if bool(config.use_dual_stabilization):
-            stabilizer = DualStabilizer(
-                alpha=float(config.dual_stab_alpha),
-                alpha_decay=float(config.dual_stab_alpha_decay),
-                min_alpha=float(config.dual_stab_min_alpha),
-            )
+        stabilizer: Optional[DualStabilizer] = _reset_stabilizer()
+        sri_round = 0
+        pending_sri_log: Optional[Dict[str, Any]] = None
 
         for _ in range(config.max_cg_iterations_per_node):
             if config.deadline_ts is not None and time.perf_counter() >= float(config.deadline_ts):
@@ -823,7 +869,12 @@ class BnBNode:
             pricing_duals = stabilizer.blend(dual_values) if stabilizer is not None else dual_values
             t1 = time.perf_counter()
             pricing_result = self.solve_subproblem(pricing_duals, effective_config)
-            self.solve_stats["pricing_time_s"] += time.perf_counter() - t1
+            pricing_elapsed = time.perf_counter() - t1
+            self.solve_stats["pricing_time_s"] += pricing_elapsed
+            if pending_sri_log is not None:
+                pending_sri_log["pricing_time_after_cuts_s"] = float(
+                    pending_sri_log.get("pricing_time_after_cuts_s", 0.0)
+                ) + float(pricing_elapsed)
             meta = pricing_result.metadata if isinstance(pricing_result.metadata, dict) else {}
             self.solve_stats["labels_generated"] += int(meta.get("labels_generated", 0))
             self.solve_stats["labels_expanded"] += int(meta.get("labels_expanded", 0))
@@ -856,7 +907,12 @@ class BnBNode:
                 # Out-step: pure LP dual로 즉시 재시도 (LP 재풀기 없이)
                 t1b = time.perf_counter()
                 pricing_result_out = self.solve_subproblem(dual_values, effective_config)
-                self.solve_stats["pricing_time_s"] += time.perf_counter() - t1b
+                pricing_elapsed_out = time.perf_counter() - t1b
+                self.solve_stats["pricing_time_s"] += pricing_elapsed_out
+                if pending_sri_log is not None:
+                    pending_sri_log["pricing_time_after_cuts_s"] = float(
+                        pending_sri_log.get("pricing_time_after_cuts_s", 0.0)
+                    ) + float(pricing_elapsed_out)
                 meta_out = pricing_result_out.metadata if isinstance(pricing_result_out.metadata, dict) else {}
                 self.solve_stats["labels_generated"] += int(meta_out.get("labels_generated", 0))
                 self.solve_stats["labels_expanded"] += int(meta_out.get("labels_expanded", 0))
@@ -877,7 +933,8 @@ class BnBNode:
                 # Out-step에서도 컬럼 없음 → 진짜 수렴 (fall through)
 
             # ── CG 수렴 ────────────────────────────────────────────────────
-            if lp_obj >= incumbent_ub - config.eps_integrality:
+            _finalize_pending_sri_log(lp_obj)
+            if _is_pruned_by_bound(lp_obj):
                 self.status = NodeStatus.PRUNED
                 self.is_solved = True
                 self.is_integral = False
@@ -889,6 +946,59 @@ class BnBNode:
                 )
 
             fractional = self.extract_fractional_objects(config)
+            if (
+                fractional
+                and not _is_pruned_by_bound(lp_obj)
+                and _sri_enabled_for_node()
+                and sri_round < int(config.max_sri_rounds)
+            ):
+                sri_result = None
+                row_count_before_sri = int(self._get_gurobi_model().NumConstrs)
+                t_sri = time.perf_counter()
+                rmp_obj = getattr(self, "rmp", None)
+                if rmp_obj is not None and hasattr(rmp_obj, "separate_sri_cuts"):
+                    try:
+                        sri_result = rmp_obj.separate_sri_cuts(
+                            node_depth=self.depth,
+                            node_id=self.node_id,
+                            optimize_before=False,
+                        )
+                    except Exception:
+                        sri_result = None
+                sri_elapsed = time.perf_counter() - t_sri
+                if sri_result is not None:
+                    self.solve_stats["sri_separation_time_s"] += float(sri_elapsed)
+                    round_log = {
+                        "round": int(sri_round + 1),
+                        "found": int(getattr(sri_result, "found_count", 0)),
+                        "selected": int(getattr(sri_result, "selected_count", 0)),
+                        "added": int(getattr(sri_result, "added_count", 0)),
+                        "max_violation": float(getattr(sri_result, "max_violation", 0.0)),
+                        "avg_violation": float(getattr(sri_result, "avg_selected_violation", 0.0)),
+                        "per_day": dict(getattr(sri_result, "per_day_counts", {}) or {}),
+                        "lb_before_cuts": float(lp_obj),
+                        "lb_after_cg_convergence": None,
+                        "rmp_row_count_before": int(row_count_before_sri),
+                        "rmp_row_count_after_cg": None,
+                        "pricing_time_after_cuts_s": 0.0,
+                        "separation_time_s": float(sri_elapsed),
+                    }
+                    self.solve_stats["sri_round_logs"].append(round_log)
+                    if int(getattr(sri_result, "added_count", 0)) > 0:
+                        sri_round += 1
+                        self.solve_stats["sri_rounds"] = int(sri_round)
+                        self.solve_stats["sri_cuts_added"] += int(getattr(sri_result, "added_count", 0))
+                        pending_sri_log = round_log
+                        print(
+                            f"[SRI] round={round_log['round']} found={round_log['found']} "
+                            f"selected={round_log['selected']} added={round_log['added']} "
+                            f"max_viol={round_log['max_violation']:.6g} "
+                            f"avg_viol={round_log['avg_violation']:.6g} "
+                            f"per_day={round_log['per_day']} lb_before={round_log['lb_before_cuts']:.6g} "
+                            f"rows={round_log['rmp_row_count_before']}"
+                        )
+                        stabilizer = _reset_stabilizer()
+                        continue
             if not fractional:
                 art_sum = self._artificial_sum()
                 if art_sum > 1e-8:
@@ -945,14 +1055,7 @@ class BnBNode:
                         self._branch_constraints_applied = False
                         self.apply_branch_constraints()
                         # 전환 후에는 표준 RMP dual 공간이 달라지므로 stabilizer 를 초기화한다.
-                        if bool(config.use_dual_stabilization):
-                            stabilizer = DualStabilizer(
-                                alpha=float(config.dual_stab_alpha),
-                                alpha_decay=float(config.dual_stab_alpha_decay),
-                                min_alpha=float(config.dual_stab_min_alpha),
-                            )
-                        else:
-                            stabilizer = None
+                        stabilizer = _reset_stabilizer()
                         continue
                 # ── End A-RMP → 표준 RMP 전환 훅 ────────────────────────
 
@@ -2951,6 +3054,11 @@ class BnBNode:
             route_cut_const = float(cut_pricing_state.route_constant)
             base_route_rc = -vehicle_dual + route_cut_const
             cpp_vehicle_dual = vehicle_dual - route_cut_const
+            if cut_pricing_state.has_rb_specs() and effective_pricing_method in {"cpp_ng", "cpp_dp"}:
+                fallback_key = "cpp_ng_empty_fallback" if effective_pricing_method == "cpp_ng" else "cpp_empty_fallback"
+                effective_pricing_method = str(pricing_data.get(fallback_key, "dp")).lower()
+                if effective_pricing_method not in {"dp", "labeling"}:
+                    effective_pricing_method = "dp"
             _prof["pricing_prof_dual_cut_s"] += time.perf_counter() - _tdc
             forbidden_edges, forced_edges = self._branch_rules_for_day(day_ctx)
             sched_forbidden_map = pricing_data.get("forbidden_required_edges_by_day", {})

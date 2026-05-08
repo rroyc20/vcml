@@ -279,6 +279,10 @@ class InspectBnBNode(BnBNode):
             "zero_add_iterations": 0,
             "hit_cg_iteration_limit": False,
             "hit_time_limit": False,
+            "sri_rounds": 0,
+            "sri_cuts_added": 0,
+            "sri_round_logs": [],
+            "sri_separation_time_s": 0.0,
         }
 
         from refactor_algorithm.core.pricing.node import DualStabilizer
@@ -289,6 +293,50 @@ class InspectBnBNode(BnBNode):
                 alpha_decay=float(config.dual_stab_alpha_decay),
                 min_alpha=float(config.dual_stab_min_alpha),
             )
+        sri_round = 0
+        pending_sri_log: Optional[Dict[str, Any]] = None
+
+        def _reset_stabilizer() -> Optional[DualStabilizer]:
+            if bool(config.use_dual_stabilization):
+                return DualStabilizer(
+                    alpha=float(config.dual_stab_alpha),
+                    alpha_decay=float(config.dual_stab_alpha_decay),
+                    min_alpha=float(config.dual_stab_min_alpha),
+                )
+            return None
+
+        def _sri_enabled_for_node() -> bool:
+            inst = getattr(getattr(self, "rmp", None), "inst", {})
+            if isinstance(inst, dict):
+                inst_enabled = bool(int(inst.get("enable_sri", inst.get("use_sri_cuts", 0))))
+            else:
+                inst_enabled = True
+            if not bool(config.enable_sri) or not inst_enabled:
+                return False
+            if bool(config.root_only_sri) and int(self.depth) > 0:
+                return False
+            return True
+
+        def _finalize_pending_sri_log(lp_value: float) -> None:
+            nonlocal pending_sri_log
+            if pending_sri_log is None:
+                return
+            pending_sri_log["lb_after_cg_convergence"] = float(lp_value)
+            try:
+                pending_sri_log["rmp_row_count_after_cg"] = int(self._get_gurobi_model().NumConstrs)
+            except Exception:
+                pending_sri_log["rmp_row_count_after_cg"] = None
+            pending_sri_log = None
+
+        def _is_pruned_by_bound(lp_value: float) -> bool:
+            try:
+                ub = float(incumbent_ub)
+                lb = float(lp_value)
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(ub) or not math.isfinite(lb):
+                return False
+            return lb >= ub - config.eps_integrality
 
         cg_iter = 0
         for _ in range(config.max_cg_iterations_per_node):
@@ -365,6 +413,10 @@ class InspectBnBNode(BnBNode):
             pricing_result = self.solve_subproblem(pricing_duals, effective_config)
             pricing_elapsed = time.perf_counter() - t1
             self.solve_stats["pricing_time_s"] += pricing_elapsed
+            if pending_sri_log is not None:
+                pending_sri_log["pricing_time_after_cuts_s"] = float(
+                    pending_sri_log.get("pricing_time_after_cuts_s", 0.0)
+                ) + float(pricing_elapsed)
             meta = pricing_result.metadata if isinstance(pricing_result.metadata, dict) else {}
             self.solve_stats["labels_generated"] += int(meta.get("labels_generated", 0))
             self.solve_stats["labels_expanded"] += int(meta.get("labels_expanded", 0))
@@ -415,7 +467,12 @@ class InspectBnBNode(BnBNode):
                 stabilizer.switch_to_out_step()
                 t1b = time.perf_counter()
                 pricing_result_out = self.solve_subproblem(dual_values, effective_config)
-                self.solve_stats["pricing_time_s"] += time.perf_counter() - t1b
+                pricing_elapsed_out = time.perf_counter() - t1b
+                self.solve_stats["pricing_time_s"] += pricing_elapsed_out
+                if pending_sri_log is not None:
+                    pending_sri_log["pricing_time_after_cuts_s"] = float(
+                        pending_sri_log.get("pricing_time_after_cuts_s", 0.0)
+                    ) + float(pricing_elapsed_out)
                 meta_out = pricing_result_out.metadata if isinstance(pricing_result_out.metadata, dict) else {}
                 self.solve_stats["coeff_dominated_filtered"] += int(meta_out.get("coeff_dominated_filtered", 0))
                 self.solve_stats["columns_generated"] += int(meta_out.get("num_new_columns", len(pricing_result_out.new_columns)))
@@ -437,7 +494,8 @@ class InspectBnBNode(BnBNode):
                         continue
 
             # CG converged
-            if lp_obj >= incumbent_ub - config.eps_integrality:
+            _finalize_pending_sri_log(lp_obj)
+            if _is_pruned_by_bound(lp_obj):
                 _inspect_print_sum_k_lambda_over_route(self)
                 self.status = NodeStatus.PRUNED
                 self.is_solved = True
@@ -450,6 +508,59 @@ class InspectBnBNode(BnBNode):
                 )
 
             fractional = self.extract_fractional_objects(config)
+            if (
+                fractional
+                and not _is_pruned_by_bound(lp_obj)
+                and _sri_enabled_for_node()
+                and sri_round < int(config.max_sri_rounds)
+            ):
+                sri_result = None
+                row_count_before_sri = int(self._get_gurobi_model().NumConstrs)
+                t_sri = time.perf_counter()
+                rmp_obj = getattr(self, "rmp", None)
+                if rmp_obj is not None and hasattr(rmp_obj, "separate_sri_cuts"):
+                    try:
+                        sri_result = rmp_obj.separate_sri_cuts(
+                            node_depth=self.depth,
+                            node_id=self.node_id,
+                            optimize_before=False,
+                        )
+                    except Exception:
+                        sri_result = None
+                sri_elapsed = time.perf_counter() - t_sri
+                if sri_result is not None:
+                    self.solve_stats["sri_separation_time_s"] += float(sri_elapsed)
+                    round_log = {
+                        "round": int(sri_round + 1),
+                        "found": int(getattr(sri_result, "found_count", 0)),
+                        "selected": int(getattr(sri_result, "selected_count", 0)),
+                        "added": int(getattr(sri_result, "added_count", 0)),
+                        "max_violation": float(getattr(sri_result, "max_violation", 0.0)),
+                        "avg_violation": float(getattr(sri_result, "avg_selected_violation", 0.0)),
+                        "per_day": dict(getattr(sri_result, "per_day_counts", {}) or {}),
+                        "lb_before_cuts": float(lp_obj),
+                        "lb_after_cg_convergence": None,
+                        "rmp_row_count_before": int(row_count_before_sri),
+                        "rmp_row_count_after_cg": None,
+                        "pricing_time_after_cuts_s": 0.0,
+                        "separation_time_s": float(sri_elapsed),
+                    }
+                    self.solve_stats["sri_round_logs"].append(round_log)
+                    if int(getattr(sri_result, "added_count", 0)) > 0:
+                        sri_round += 1
+                        self.solve_stats["sri_rounds"] = int(sri_round)
+                        self.solve_stats["sri_cuts_added"] += int(getattr(sri_result, "added_count", 0))
+                        pending_sri_log = round_log
+                        print(
+                            f"[SRI] round={round_log['round']} found={round_log['found']} "
+                            f"selected={round_log['selected']} added={round_log['added']} "
+                            f"max_viol={round_log['max_violation']:.6g} "
+                            f"avg_viol={round_log['avg_violation']:.6g} "
+                            f"per_day={round_log['per_day']} lb_before={round_log['lb_before_cuts']:.6g} "
+                            f"rows={round_log['rmp_row_count_before']}"
+                        )
+                        stabilizer = _reset_stabilizer()
+                        continue
             if not fractional:
                 art_sum = self._artificial_sum()
                 if art_sum > 1e-8:
@@ -547,7 +658,31 @@ class InspectBnBNode(BnBNode):
             lp_obj_final = self.lp_obj_value if self.lp_obj_value is not None else float("inf")
         else:
             self.solve_stats["hit_cg_iteration_limit"] = True
-            lp_obj_final = self._iter_log[-1].lp_obj if self._iter_log else float("inf")
+            try:
+                lp_obj_final, _ = self.solve_rmp()
+            except RuntimeError:
+                self.status = NodeStatus.PRUNED
+                self.is_solved = True
+                self.is_integral = False
+                return NodeSolveResult(
+                    node_id=self.node_id,
+                    status=self.status,
+                    lower_bound=float("inf"),
+                    is_integral=False,
+                )
+        _finalize_pending_sri_log(lp_obj_final)
+
+        if _is_pruned_by_bound(lp_obj_final):
+            _inspect_print_sum_k_lambda_over_route(self)
+            self.status = NodeStatus.PRUNED
+            self.is_solved = True
+            self.is_integral = False
+            return NodeSolveResult(
+                node_id=self.node_id,
+                status=self.status,
+                lower_bound=lp_obj_final,
+                is_integral=False,
+            )
 
         self.status = NodeStatus.SOLVED_LP
         self.is_integral = False
@@ -638,7 +773,7 @@ class BnPInspector(GlobalRMPBnBTree):
         if not (isinstance(key, tuple) and len(key) >= 1):
             return None
         fam = str(key[0])
-        if fam not in {"capacity_link_tk", "capacity_link_t"}:
+        if fam not in {"capacity_link_tk", "capacity_link_t", "sri3_t"}:
             return None
         return {
             "family": fam,
@@ -675,6 +810,8 @@ class BnPInspector(GlobalRMPBnBTree):
                     fam: Optional[str] = None
                     if cname.startswith("cap_sep_") or cname.startswith("cap_link_"):
                         fam = "capacity_link"
+                    elif cname.startswith("sri3_"):
+                        fam = "sri3_t"
                     if fam is not None:
                         out[cname] = {"family": fam, "cname": cname, "key": ""}
             except Exception:
@@ -682,7 +819,6 @@ class BnPInspector(GlobalRMPBnBTree):
         return out
 
     def process_node(self, node: BnBNode) -> NodeSolveResult:
-        cuts_before = self._current_cut_registry(node)
         rec = NodeRecord(
             node_id=node.node_id,
             depth=node.depth,
@@ -692,16 +828,11 @@ class BnPInspector(GlobalRMPBnBTree):
             open_nodes_at_entry=self._open_count(),
             col_pool_size_at_entry=self._col_pool_size(node),
             active_constraints=[self._constraint_to_dict(bc) for bc in node.constraints],
-            active_cuts=sorted(cuts_before.values(), key=lambda x: (x.get("family", ""), x.get("cname", ""))),
         )
 
         t_start = time.perf_counter()
         result = super().process_node(node)
         rec.node_time_s = time.perf_counter() - t_start
-        cuts_after = self._current_cut_registry(node)
-        rec.active_cuts = sorted(cuts_after.values(), key=lambda x: (x.get("family", ""), x.get("cname", "")))
-        added_cut_names = sorted(set(cuts_after.keys()) - set(cuts_before.keys()))
-        rec.cuts_added_this_node = [cuts_after[nm] for nm in added_cut_names]
 
         # Pull iter log from InspectBnBNode
         if hasattr(node, "_iter_log"):
@@ -721,6 +852,10 @@ class BnPInspector(GlobalRMPBnBTree):
         )
         rec.solve_pricing_time_s = float(stats.get("pricing_time_s", 0.0))
         rec.solve_addcol_time_s = float(stats.get("addcol_time_s", 0.0))
+        rec.sri_rounds = int(stats.get("sri_rounds", 0))
+        rec.sri_cuts_added = int(stats.get("sri_cuts_added", 0))
+        rec.sri_separation_time_s = float(stats.get("sri_separation_time_s", 0.0))
+        rec.sri_round_logs = list(stats.get("sri_round_logs", []) or [])
         _art_int = stats.get("artificial_sum_at_integral", None)
         if _art_int is not None:
             rec.art_sum_at_converge = float(_art_int)
@@ -978,6 +1113,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         help="1=차량 인덱스 사전순 대칭 파괴(SimpleSPMaster): 각 일 t마다 Σ_r λ_{t,k_hi,r} − Σ_r λ_{t,k_lo,r} ≤ 0 (k_lo<k_hi). 0=끔.",
     )
     parser.add_argument("--use-capacity-cuts", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--use-sri-cuts", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--sri-cardinality", type=int, choices=[3], default=3)
+    parser.add_argument("--enable-sri", type=int, choices=[0, 1], default=1)
+    parser.add_argument("--root-only-sri", type=int, choices=[0, 1], default=1)
+    parser.add_argument("--max-sri-rounds", type=int, default=3)
+    parser.add_argument("--max-cuts-per-round", type=int, default=20)
+    parser.add_argument("--max-cuts-per-day", type=int, default=5)
+    parser.add_argument("--min-sri-violation", type=float, default=1e-4)
+    parser.add_argument("--enable-sri-similarity-filter", type=int, choices=[0, 1], default=1)
+    parser.add_argument("--max-shared-edges-between-sri3", type=int, default=1)
     parser.add_argument("--cut-root-only", type=int, choices=[0, 1], default=0)
     parser.add_argument(
         "--cut-separation-max-depth",
@@ -1021,9 +1166,29 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         yao_style_pricing=int(args.yao_pricing),
         use_transformed_pricing_graph=int(args.use_transformed_pricing_graph),
         use_vehicle_lex_symmetry=int(args.use_vehicle_lex_symmetry),
+        use_sri_cuts=int(args.use_sri_cuts),
+        sri_cardinality=int(args.sri_cardinality),
+        enable_sri=int(args.enable_sri),
+        root_only_sri=int(args.root_only_sri),
+        max_sri_rounds=int(args.max_sri_rounds),
+        max_cuts_per_round=int(args.max_cuts_per_round),
+        max_cuts_per_day=int(args.max_cuts_per_day),
+        min_sri_violation=float(args.min_sri_violation),
+        enable_sri_similarity_filter=int(args.enable_sri_similarity_filter),
+        max_shared_edges_between_sri3=int(args.max_shared_edges_between_sri3),
     )
     inst["cpp_ng_empty_fallback"] = str(args.cpp_ng_empty_fallback)
     inst["use_capacity_cuts"] = int(args.use_capacity_cuts)
+    inst["use_sri_cuts"] = int(args.use_sri_cuts)
+    inst["sri_cardinality"] = int(args.sri_cardinality)
+    inst["enable_sri"] = int(args.enable_sri)
+    inst["root_only_sri"] = int(args.root_only_sri)
+    inst["max_sri_rounds"] = int(args.max_sri_rounds)
+    inst["max_cuts_per_round"] = int(args.max_cuts_per_round)
+    inst["max_cuts_per_day"] = int(args.max_cuts_per_day)
+    inst["min_sri_violation"] = float(args.min_sri_violation)
+    inst["enable_sri_similarity_filter"] = int(args.enable_sri_similarity_filter)
+    inst["max_shared_edges_between_sri3"] = int(args.max_shared_edges_between_sri3)
     inst["cut_root_only"] = int(args.cut_root_only)
     if args.cut_separation_max_depth is not None:
         inst["cut_separation_max_depth"] = int(args.cut_separation_max_depth)
@@ -1061,6 +1226,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         use_dual_stabilization=use_stab,
         dual_stab_alpha=args.stab_alpha,
         phase1_col_cap=args.phase1_col_cap,
+        enable_sri=bool(int(args.enable_sri)),
+        root_only_sri=bool(int(args.root_only_sri)),
+        max_sri_rounds=int(args.max_sri_rounds),
     )
 
     out_path = Path(args.out) if args.out.strip() else None
