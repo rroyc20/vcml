@@ -1990,7 +1990,7 @@ class BnBNode:
         deadhead_adj = self._build_deadhead_base_adjacency(adjacency)
         base_fp = self._adjacency_fingerprint(deadhead_adj)
         meta_fp = meta.get("fingerprint")
-        cached = cache.get("transformed_graph_precompute_v1")
+        cached = cache.get("transformed_graph_precompute_v2")
         if (
             isinstance(cached, dict)
             and cached.get("base_fingerprint") == base_fp
@@ -2002,25 +2002,23 @@ class BnBNode:
         pricing_nodes = list(meta["pricing_nodes_list"])
         dead_sp_cost, dead_sp_path = self._compute_apsp_from_adjacency(deadhead_adj, pricing_nodes)
 
-        transformed_adj: Dict[Any, List[Dict[str, Any]]] = {n: [] for n in pricing_nodes}
+        deadhead_out: Dict[Any, Tuple[Tuple[Any, float, Tuple[Any, ...]], ...]] = {}
         for src in pricing_nodes:
-            for dst in pricing_nodes:
+            row_cost = dead_sp_cost.get(src, {})
+            row_path = dead_sp_path.get(src, {})
+            compact_out: List[Tuple[Any, float, Tuple[Any, ...]]] = []
+            for dst, path_arcs in row_path.items():
                 if src == dst:
                     continue
-                c = float(dead_sp_cost.get(src, {}).get(dst, float("inf")))
-                if not math.isfinite(c):
-                    continue
-                p = tuple(dead_sp_path.get(src, {}).get(dst, ()))
+                p = tuple(path_arcs)
                 if not p:
                     continue
-                transformed_adj.setdefault(src, []).append(
-                    {
-                        "kind": "deadhead",
-                        "to": dst,
-                        "travel_cost": c,
-                        "path_arcs": p,
-                    }
-                )
+                c = float(row_cost.get(dst, float("inf")))
+                if not math.isfinite(c):
+                    continue
+                compact_out.append((dst, c, p))
+            if compact_out:
+                deadhead_out[src] = tuple(compact_out)
 
         req_service_meta = meta["req_service_meta"]
         req_service_arcs = meta["req_service_arcs"]
@@ -2028,34 +2026,37 @@ class BnBNode:
         req_to_bit = meta["req_to_bit"]
         bit_to_req = meta["bit_to_req"]
 
+        required_out: Dict[Any, Tuple[Tuple[Any, Any, float, float, float, Tuple[Any, ...]], ...]] = {}
+        required_lists: Dict[Any, List[Tuple[Any, Any, float, float, float, Tuple[Any, ...]]]] = {}
         for req_id, svc_arcs in req_service_arcs.items():
             for u, v, arc_id, tc, dem, sc in svc_arcs:
-                transformed_adj.setdefault(u, []).append(
-                    {
-                        "kind": "required",
-                        "to": v,
-                        "travel_cost": float(tc),
-                        "service_cost": float(sc),
-                        "demand": float(dem),
-                        "required_id": req_id,
-                        "id": arc_id,
-                        "path_arcs": (arc_id,),
-                    }
+                required_lists.setdefault(u, []).append(
+                    (
+                        v,
+                        req_id,
+                        float(tc),
+                        float(dem),
+                        float(sc),
+                        (arc_id,),
+                    )
                 )
+        for u, arcs in required_lists.items():
+            required_out[u] = tuple(arcs)
 
         out = {
             "base_fingerprint": base_fp,
             "meta_fingerprint": meta_fp,
             "depot": depot,
             "pricing_nodes_list": pricing_nodes,
-            "adjacency": transformed_adj,
+            "deadhead_out": deadhead_out,
+            "required_out": required_out,
             "req_service_meta": req_service_meta,
             "req_service_arcs": req_service_arcs,
             "req_ids": req_ids,
             "req_to_bit": req_to_bit,
             "bit_to_req": bit_to_req,
         }
-        cache["transformed_graph_precompute_v1"] = out
+        cache["transformed_graph_precompute_v2"] = out
         return out
 
     def _pricing_cache_store(self) -> Dict[str, Any]:
@@ -2275,6 +2276,65 @@ class BnBNode:
         }
         return sp_cost, sp_path
 
+    def _build_sparse_road_adjacency(
+        self,
+        inst: Dict[str, Any],
+    ) -> Dict[Any, List[Dict[str, Any]]]:
+        """Physical sparse road graph used to recover non-required-edge discount paths."""
+        edges = inst.get("road_sparse_edges") or inst.get("arc_sparse_edges")
+        costs = inst.get("road_sparse_travel_cost") or inst.get("arc_sparse_travel_cost")
+        if not isinstance(edges, (list, tuple)) or not isinstance(costs, dict):
+            return {}
+        adj: Dict[Any, List[Dict[str, Any]]] = {}
+        for ij in edges:
+            if not (isinstance(ij, (list, tuple)) and len(ij) >= 2):
+                continue
+            i, j = int(ij[0]), int(ij[1])
+            ec = self._canon_arc_key((i, j))
+            base = float(costs.get(ec, float("inf")))
+            if not math.isfinite(base):
+                continue
+            adj.setdefault(i, []).append({"to": j, "travel_cost": base, "id": (i, j)})
+            adj.setdefault(j, []).append({"to": i, "travel_cost": base, "id": (j, i)})
+        return adj
+
+    def _get_sparse_discount_path_apsp_cached(
+        self,
+        inst: Dict[str, Any],
+        depot: Any,
+        pricing_nodes_list: List[Any],
+    ) -> Tuple[Dict[Any, Dict[Any, float]], Dict[Any, Dict[Any, Tuple[Any, ...]]]]:
+        """
+        Shortest-path decomposition on the physical sparse road graph.
+
+        Used in non-transformed / non-Yao pricing so discount-link duals on physical
+        non-required edges are propagated through metric-closure transitions.
+        """
+        cache = self._pricing_cache_store()
+        sparse_adj = self._build_sparse_road_adjacency(inst)
+        if not sparse_adj:
+            return {}, {}
+        fp = self._adjacency_fingerprint(sparse_adj)
+        cached = cache.get("sparse_discount_path_apsp_v1")
+        if (
+            isinstance(cached, dict)
+            and cached.get("fingerprint") == fp
+            and cached.get("depot") == depot
+        ):
+            sc = cached.get("sp_cost")
+            sp = cached.get("sp_path")
+            if isinstance(sc, dict) and isinstance(sp, dict):
+                return sc, sp
+
+        sp_cost, sp_path = self._compute_apsp_from_adjacency(sparse_adj, pricing_nodes_list)
+        cache["sparse_discount_path_apsp_v1"] = {
+            "fingerprint": fp,
+            "depot": depot,
+            "sp_cost": sp_cost,
+            "sp_path": sp_path,
+        }
+        return sp_cost, sp_path
+
     def solve_subproblem(self, dual_values: Dict[str, Any], config: BnBConfig) -> PricingResult:
         """Run pricing (labeling/RCSPP) and return negative reduced-cost columns."""
         _prof_t0 = time.perf_counter()
@@ -2351,6 +2411,8 @@ class BnBNode:
         )
         closure_sp_cost: Optional[Dict[Any, Dict[Any, float]]] = None
         closure_sp_path: Optional[Dict[Any, Dict[Any, Tuple[Any, ...]]]] = None
+        discount_sp_cost: Optional[Dict[Any, Dict[Any, float]]] = None
+        discount_sp_path: Optional[Dict[Any, Dict[Any, Tuple[Any, ...]]]] = None
         if use_transformed_graph:
             pre_full = None
             meta_only = None
@@ -2363,6 +2425,14 @@ class BnBNode:
         else:
             pre_full = self._get_pricing_graph_precompute(adjacency, depot)
             meta_only = None
+
+        if not use_transformed_graph and isinstance(inst_dict, dict):
+            discount_meta = meta_only if meta_only is not None else self._ensure_pricing_meta_cached(adjacency, depot)
+            discount_sp_cost, discount_sp_path = self._get_sparse_discount_path_apsp_cached(
+                inst_dict,
+                depot,
+                discount_meta["pricing_nodes_list"],
+            )
 
         if use_transformed_graph:
             assert transformed_pre is not None
@@ -2652,6 +2722,16 @@ class BnBNode:
                     continue
                 e_key = self._canon_arc_key((src, dst))
                 if e_key not in nonrequired_closure_edge_set or e_key in req_edge_set_pricing or e_key in seen:
+                    if discount_sp_path is None:
+                        continue
+                    for arc in discount_sp_path.get(src, {}).get(dst, ()):
+                        if not (isinstance(arc, tuple) and len(arc) >= 2):
+                            continue
+                        ae = self._canon_arc_key((arc[0], arc[1]))
+                        if ae in req_edge_set_pricing or ae not in nonrequired_closure_edge_set or ae in seen:
+                            continue
+                        seen.add(ae)
+                        used.append(ae)
                     continue
                 seen.add(e_key)
                 used.append(e_key)
@@ -2665,7 +2745,8 @@ class BnBNode:
             e_key = self._canon_arc_key((src, dst))
             if e_key in nonrequired_closure_edge_set and e_key not in req_edge_set_pricing:
                 return float(discount_duals.get(e_key, 0.0))
-            arcs = sp_path.get(src, {}).get(dst, ())
+            path_lookup = discount_sp_path if discount_sp_path is not None else sp_path
+            arcs = path_lookup.get(src, {}).get(dst, ())
             return _path_discount_from_arcs(arcs, discount_duals)
 
         def _nonrequired_edges_from_path(path_arcs: Sequence[Any]) -> List[Any]:
@@ -2691,13 +2772,41 @@ class BnBNode:
             discount_edge_duals: Dict[Any, float],
             forbidden_edges: set,
             cut_pricing_state: Any,
-            day_req_service_meta: Dict[Any, Tuple[float, float]],
             day_req_to_bit: Dict[Any, int],
             day_bit_to_req: Sequence[Any],
             max_columns_left: int,
         ) -> Dict[str, int]:
             assert transformed_pre is not None
-            graph_adj = transformed_pre["adjacency"]
+            deadhead_out = transformed_pre["deadhead_out"]
+            required_out = transformed_pre["required_out"]
+            has_discount_duals = any(abs(float(v)) > 1e-12 for v in discount_edge_duals.values())
+            day_deadhead_out: Dict[Any, Tuple[Tuple[Any, float, Tuple[Any, ...]], ...]]
+            if has_discount_duals:
+                day_deadhead_out = {}
+                for cur_node_key, arcs in deadhead_out.items():
+                    day_arcs: List[Tuple[Any, float, Tuple[Any, ...]]] = []
+                    for nxt, travel, step_path in arcs:
+                        day_arcs.append(
+                            (nxt, travel - _path_discount_from_arcs(step_path, discount_edge_duals), step_path)
+                        )
+                    if day_arcs:
+                        day_deadhead_out[cur_node_key] = tuple(day_arcs)
+            else:
+                day_deadhead_out = deadhead_out
+
+            edge_dual_get = edge_duals.get
+            req_bit_get = day_req_to_bit.get
+            day_required_out: Dict[Any, Tuple[Tuple[Any, float, Tuple[Any, ...], int, float, float], ...]] = {}
+            for cur_node_key, arcs in required_out.items():
+                day_arcs2: List[Tuple[Any, float, Tuple[Any, ...], int, float, float]] = []
+                for nxt, req_id, travel, demand, service_cost, step_path in arcs:
+                    req_bit = int(req_bit_get(req_id, 0))
+                    service_rc = float("inf")
+                    if req_bit != 0 and req_id not in forbidden_edges:
+                        service_rc = travel + service_cost - float(edge_dual_get(req_id, 0.0))
+                    day_arcs2.append((nxt, travel, step_path, req_bit, demand, service_rc))
+                if day_arcs2:
+                    day_required_out[cur_node_key] = tuple(day_arcs2)
 
             best_rc: Dict[Tuple[int, Any], float] = {(0, depot): float(base_rc)}
             best_load: Dict[Tuple[int, Any], float] = {(0, depot): 0.0}
@@ -2773,29 +2882,7 @@ class BnBNode:
                             negative_found += 1
                     continue
 
-                for arc in graph_adj.get(cur_node, []):
-                    kind = str(arc.get("kind", ""))
-                    nxt = arc.get("to")
-                    if nxt is None:
-                        continue
-                    step_path = tuple(arc.get("path_arcs", ()))
-                    if kind == "deadhead":
-                        travel = float(arc.get("travel_cost", 0.0))
-                        delta_disc = _path_discount_from_arcs(step_path, discount_edge_duals)
-                        _push_state(
-                            mask,
-                            nxt,
-                            cur_rc + travel - delta_disc,
-                            cur_load,
-                            key_cur,
-                            step_path,
-                        )
-                        continue
-
-                    if kind != "required":
-                        continue
-
-                    travel = float(arc.get("travel_cost", 0.0))
+                for nxt, travel, step_path in day_deadhead_out.get(cur_node, ()):
                     _push_state(
                         mask,
                         nxt,
@@ -2805,23 +2892,27 @@ class BnBNode:
                         step_path,
                     )
 
-                    req_id = arc.get("required_id")
-                    if req_id is None or req_id in forbidden_edges:
-                        continue
-                    req_bit = day_req_to_bit.get(req_id, 0)
+                for nxt, travel, step_path, req_bit, demand, service_rc in day_required_out.get(cur_node, ()):
+                    _push_state(
+                        mask,
+                        nxt,
+                        cur_rc + travel,
+                        cur_load,
+                        key_cur,
+                        step_path,
+                    )
+
                     if req_bit == 0 or (mask & req_bit) != 0:
                         continue
-                    demand = float(arc.get("demand", 0.0))
                     new_load = cur_load + demand
                     if new_load > capacity + 1e-9:
                         continue
-                    service_cost = float(arc.get("service_cost", 0.0))
                     new_mask = mask | req_bit
                     d_rb = cut_pricing_state.rb_delta(mask, new_mask, day_bit_to_req)
                     _push_state(
                         new_mask,
                         nxt,
-                        cur_rc + travel + service_cost - edge_duals.get(req_id, 0.0) + d_rb,
+                        cur_rc + service_rc + d_rb,
                         new_load,
                         key_cur,
                         step_path,
@@ -2883,6 +2974,41 @@ class BnBNode:
             # Therefore pricing only uses *forbidden* filters here.
             forced_edges = set()
 
+            if use_transformed_graph:
+                if forbidden_edges:
+                    day_req_ids = [rid for rid in req_ids if rid not in forbidden_edges]
+                    if not day_req_ids:
+                        continue
+                    day_req_service_meta = {rid: req_service_meta[rid] for rid in day_req_ids}
+                    day_req_to_bit = {rid: (1 << i) for i, rid in enumerate(day_req_ids)}
+                    day_bit_to_req = day_req_ids
+                else:
+                    day_req_service_meta = req_service_meta
+                    day_req_to_bit = req_to_bit
+                    day_bit_to_req = bit_to_req
+                _tt = time.perf_counter()
+                transformed_stats = _run_transformed_day_pricing(
+                    day_ctx=day_ctx,
+                    day_val=day,
+                    driver_val=driver,
+                    base_rc=base_route_rc,
+                    edge_duals=edge_duals,
+                    discount_edge_duals=discount_edge_duals,
+                    forbidden_edges=forbidden_edges,
+                    cut_pricing_state=cut_pricing_state,
+                    day_req_to_bit=day_req_to_bit,
+                    day_bit_to_req=day_bit_to_req,
+                    max_columns_left=max(0, max_columns - len(new_columns)),
+                )
+                day_stats[day_ctx] = transformed_stats
+                total_labels_generated += int(transformed_stats.get("labels_generated", 0))
+                total_labels_expanded += int(transformed_stats.get("labels_expanded", 0))
+                total_existing_sig_filtered += int(transformed_stats.get("existing_sig_filtered", 0))
+                _prof["pricing_prof_py_dp_s"] += time.perf_counter() - _tt
+                if len(new_columns) >= max_columns:
+                    break
+                continue
+
             _tdg = time.perf_counter()
             day_graph = self._get_node_pricing_day_graph(
                 day_ctx=day_ctx,
@@ -2902,31 +3028,6 @@ class BnBNode:
             if not day_req_ids:
                 continue
 
-            if use_transformed_graph:
-                _tt = time.perf_counter()
-                transformed_stats = _run_transformed_day_pricing(
-                    day_ctx=day_ctx,
-                    day_val=day,
-                    driver_val=driver,
-                    base_rc=base_route_rc,
-                    edge_duals=edge_duals,
-                    discount_edge_duals=discount_edge_duals,
-                    forbidden_edges=forbidden_edges,
-                    cut_pricing_state=cut_pricing_state,
-                    day_req_service_meta=day_req_service_meta,
-                    day_req_to_bit=day_req_to_bit,
-                    day_bit_to_req=day_bit_to_req,
-                    max_columns_left=max(0, max_columns - len(new_columns)),
-                )
-                day_stats[day_ctx] = transformed_stats
-                total_labels_generated += int(transformed_stats.get("labels_generated", 0))
-                total_labels_expanded += int(transformed_stats.get("labels_expanded", 0))
-                total_existing_sig_filtered += int(transformed_stats.get("existing_sig_filtered", 0))
-                _prof["pricing_prof_py_dp_s"] += time.perf_counter() - _tt
-                if len(new_columns) >= max_columns:
-                    break
-                continue
-
             # Yao-style: μ absorbed into sparse road arc costs before APSP (TRB 153 §4.2).
             # A-RMP agg_disc_link uses one −λ per *unique* non-required edge on a route; embedding
             # μ on every arc in APSP over-counts when the same canonical edge repeats in path_arcs.
@@ -2934,21 +3035,27 @@ class BnBNode:
                 _ty = time.perf_counter()
                 assert meta_only is not None and isinstance(inst_dict, dict)
                 assert closure_sp_cost is not None and closure_sp_path is not None
-                sparse_adj = self._build_sparse_modified_road_adjacency(
-                    inst_dict, discount_edge_duals
-                )
-                closure_discount_outside_sparse = any(
-                    self._canon_arc_key(e_key) not in sparse_yao_edge_canon
-                    for e_key in discount_edge_duals.keys()
-                )
-                if sparse_adj and not _use_unique_discount_edge and not closure_discount_outside_sparse:
-                    sp_cost, sp_path = self._compute_apsp_from_adjacency(
-                        sparse_adj, day_pricing_nodes_list
-                    )
-                    mu_in_sp = True
-                else:
-                    sp_cost, sp_path = closure_sp_cost, closure_sp_path
+                has_discount_duals = any(abs(float(v)) > 1e-12 for v in discount_edge_duals.values())
+                if not has_discount_duals and discount_sp_cost is not None and discount_sp_path is not None:
+                    sp_cost, sp_path = discount_sp_cost, discount_sp_path
                     mu_in_sp = False
+                else:
+                    sparse_adj = self._build_sparse_modified_road_adjacency(
+                        inst_dict, discount_edge_duals
+                    )
+                    closure_discount_outside_sparse = any(
+                        self._canon_arc_key(e_key) not in sparse_yao_edge_canon
+                        for e_key in discount_edge_duals.keys()
+                        if abs(float(discount_edge_duals.get(e_key, 0.0))) > 1e-12
+                    )
+                    if sparse_adj and not _use_unique_discount_edge and not closure_discount_outside_sparse:
+                        sp_cost, sp_path = self._compute_apsp_from_adjacency(
+                            sparse_adj, day_pricing_nodes_list
+                        )
+                        mu_in_sp = True
+                    else:
+                        sp_cost, sp_path = closure_sp_cost, closure_sp_path
+                        mu_in_sp = False
                 _prof["pricing_prof_yao_apsp_s"] += time.perf_counter() - _ty
             else:
                 assert pre_full is not None
