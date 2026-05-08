@@ -25,18 +25,26 @@ class CutPricingState:
     route_constant:
       Constant reduced-cost shift from capacity-link cuts.
 
-    Non-capacity cut pricing adjustments are intentionally disabled. Pricing
-    only receives the capacity-link route constant.
+    sri_specs:
+      Tuple of (subset_mask, dual_pi) for SRI-3 cuts. The route coefficient is
+      1 once the priced route has serviced at least two required edges from the
+      tracked triple, so pricing applies a one-time reduced-cost delta of -pi
+      when the serviced-mask crosses that threshold.
     """
 
     route_constant: float = 0.0
+    sri_specs: Tuple[Tuple[int, float], ...] = ()
 
     def has_rb_specs(self) -> bool:
-        return False
+        return bool(self.sri_specs)
 
     def rb_delta(self, old_mask: int, new_mask: int, bit_to_req: Sequence[Any]) -> float:
-        del old_mask, new_mask, bit_to_req
-        return 0.0
+        del bit_to_req
+        delta = 0.0
+        for subset_mask, dual_pi in self.sri_specs:
+            if (old_mask & subset_mask).bit_count() < 2 <= (new_mask & subset_mask).bit_count():
+                delta -= float(dual_pi)
+        return float(delta)
 
 
 def _extract_day_ctx(day_ctx: Any) -> Tuple[int, int | None]:
@@ -64,9 +72,9 @@ def build_cut_pricing_state(
     Capacity-link cuts:
       -Q on each lambda in the row -> constant +pi*Q for a priced route.
 
-    Non-capacity cut pricing contributions are intentionally ignored.
+    SRI-3 cuts:
+      +1 on a route when it serves at least two edges from the tracked triple.
     """
-    del req_to_bit, max_rb_cuts, mode
     tol = abs(float(dual_tol))
 
     by_name = dual_values.get("constr_pi_by_name")
@@ -79,6 +87,7 @@ def build_cut_pricing_state(
     day_id, driver_id = _extract_day_ctx(day_ctx)
     route_const = 0.0
     cap_f = float(capacity)
+    sri_specs: list[Tuple[int, float]] = []
 
     for agg_key, cname in reg.items():
         if not isinstance(agg_key, tuple) or len(agg_key) < 1:
@@ -100,6 +109,25 @@ def build_cut_pricing_state(
                 route_const += pi * cap_f
             continue
 
+        if kind == "sri3_t":
+            t = int(agg_key[1])
+            if t != day_id or len(agg_key) < 3:
+                continue
+            subset_mask = 0
+            ok = True
+            for req in tuple(agg_key[2]):
+                bit = req_to_bit.get(req)
+                if bit is None:
+                    ok = False
+                    break
+                subset_mask |= int(bit)
+            if not ok or subset_mask == 0:
+                continue
+            sri_specs.append((int(subset_mask), float(pi)))
+            if max_rb_cuts > 0 and len(sri_specs) >= int(max_rb_cuts):
+                break
+
     return CutPricingState(
         route_constant=float(route_const),
+        sri_specs=tuple(sri_specs),
     )

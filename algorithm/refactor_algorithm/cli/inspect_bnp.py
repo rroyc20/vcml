@@ -17,8 +17,8 @@ from refactor_algorithm.app import inspection
 # because defaults are only used when no extra argv is provided.
 DEFAULT_INSPECT_ARGS = [
     ### 1. Instance / size / full-or-subsample
-    "--instance", "data/existing/egl/egl-e1-A.dat",  # any .dat path, e.g. data/existing/egl/egl-e1-A.dat
-    "--full-instance", "0",  # 1=full instance, 0=subsample
+    "--instance", "data/existing/yao/yao-westjordan-S.dat",  # any .dat path, e.g. data/existing/egl/egl-e1-A.dat
+    "--full-instance", "1",  # 1=full instance, 0=subsample
     "--required-limit", "10",  # any positive int, used when --full-instance 0
     "--node-limit", "30",  # any positive int, used when --full-instance 0
     "--schedule-mode", "regular",  # regular, all_days, all_edges_daily
@@ -29,16 +29,26 @@ DEFAULT_INSPECT_ARGS = [
 
     ### 2. Cuts / separation
     "--use-capacity-cuts", "0",  # 0, 1
+    "--use-sri-cuts", "0",  # 0, 1
+    "--sri-cardinality", "3",  # currently fixed to 3
+    "--enable-sri", "0",  # 0, 1
+    "--root-only-sri", "0",  # 0, 1
+    "--max-sri-rounds", "1",  # any nonnegative int
+    "--max-cuts-per-round", "100",  # any positive int
+    "--max-cuts-per-day", "50",  # any positive int
+    "--min-sri-violation", "1e-4",  # any nonnegative float
+    "--enable-sri-similarity-filter", "0",  # 0, 1
+    "--max-shared-edges-between-sri3", "1",  # any nonnegative int
     "--cut-root-only", "0",  # 0, 1
-    "--cut-separation-max-depth", "0",  # 0=root only, or any nonnegative int
+    "--cut-separation-max-depth", "10",  # 0=root only, or any nonnegative int
     "--cut-pricing-mode", "auto",  # legacy, bitmask, auto
     "--cut-pricing-dual-tol", "1e-15",  # any nonnegative float
 
     ### 3. Pricing
-    "--pricing-method", "cpp_ng",  # labeling, dp, cpp_dp, cpp_dp_lex, cpp_ng
+    "--pricing-method", "dp",  # labeling, dp, cpp_dp, cpp_dp_lex, cpp_ng
     "--pricing-ng-size", "5",  # any positive int, mainly for cpp_ng
     "--cpp-ng-empty-fallback", "none",  # labeling, dp, none
-    "--cpp-core-variant", "rc_load_dom",  # default, rc_load_dom
+    "--cpp-core-variant", "default",  # default, rc_load_dom
     "--yao-pricing", "1",  # 0, 1
     "--use-coeff-dominance-filter", "0",  # 0, 1
     "--coeff-dom-obj-tol", "1e-9",  # any nonnegative float

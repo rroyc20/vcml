@@ -56,6 +56,7 @@ from refactor_algorithm.core.master.compare_arc_vs_bnp import (
     discount_objective_cost_per_edge,
     path_arcs_travel_total,
 )
+from refactor_algorithm.core.master.separation import SeparationRoundResult
 from refactor_algorithm.core.pricing.node import BnBConfig, BnBNode, BestBoundSelector, DepthFirstSelector
 from refactor_algorithm.core.master.compare_global_rmp_bnp import GlobalRMPBnBTree
 from refactor_algorithm.core.util.alns import run_alns_initial_solution
@@ -167,6 +168,7 @@ class AggregatedMaster:
         # 분리 관리자 (없음 – A-RMP에선 생략 가능, 필요 시 추가)
         self.separation_manager = None
         self.capacity_cuts_added: int = 0
+        self.sri_cuts_added: int = 0
         self.initial_incumbent: Optional[Dict[str, Any]] = None
 
         self._build_armp_model()
@@ -415,6 +417,7 @@ class AggregatedMaster:
         if self.aggregate_branch_constrs:
             arc_counts: Dict[Edge, float] = {}
             node_counts: Dict[int, float] = {}
+            served_set = set(serviced_edges)
             for arc in path_arcs:
                 if isinstance(arc, tuple) and len(arc) >= 2:
                     ec = _canon_edge(arc[0], arc[1])
@@ -439,6 +442,11 @@ class AggregatedMaster:
                 elif kind == "visit_node":
                     if len(agg_key) >= 3 and agg_key[2] == int(day):
                         coeff = float(node_counts.get(agg_key[1], 0.0))
+                elif kind == "sri3_t":
+                    if agg_key[1] == int(day):
+                        overlap = sum(1 for e in agg_key[2] if e in served_set)
+                        if overlap >= 2:
+                            coeff = 1.0
                 if coeff != 0.0:
                     col.addTerms(coeff, constr)
 
@@ -707,6 +715,26 @@ class AggregatedMaster:
             )
         # A-RMP uses aggregated λ^t_r (no per-(t,k) split): existing separators target SimpleSPMaster.
         return 0
+
+    def separate_sri_cuts(
+        self,
+        node_depth: Optional[int] = None,
+        node_id: Optional[int] = None,
+        optimize_before: bool = False,
+    ) -> SeparationRoundResult:
+        if not self._a_flag and self._fallback_rmp is not None:
+            eff_depth = node_depth
+            if self._pending_smp_separation_after_switch:
+                eff_depth = 0
+                self._pending_smp_separation_after_switch = False
+            res = self._fallback_rmp.separate_sri_cuts(
+                node_depth=eff_depth,
+                node_id=node_id,
+                optimize_before=optimize_before,
+            )
+            self.sri_cuts_added += int(res.added_count)
+            return res
+        return SeparationRoundResult()
 
     def build_executable_solution(
         self,
@@ -1159,6 +1187,9 @@ def solve_with_aggregated_algorithm(inst: Dict[str, Any]) -> Dict[str, Any]:
     use_ub_zero = bool(int(inst.get("use_ub_zero_branching", 0)))
     partial_pricing_ratio = float(inst.get("partial_pricing_ratio", 1.0))
     phase1_col_cap = int(inst.get("phase1_col_cap", 3))
+    enable_sri = bool(int(inst.get("enable_sri", inst.get("use_sri_cuts", 0))))
+    root_only_sri = bool(int(inst.get("root_only_sri", 1)))
+    max_sri_rounds = int(inst.get("max_sri_rounds", 3))
 
     config = BnBConfig(
         eps_integrality=1e-6,
@@ -1174,6 +1205,9 @@ def solve_with_aggregated_algorithm(inst: Dict[str, Any]) -> Dict[str, Any]:
         use_ub_zero_branching=use_ub_zero,
         partial_pricing_ratio=partial_pricing_ratio,
         phase1_col_cap=phase1_col_cap,
+        enable_sri=enable_sri,
+        root_only_sri=root_only_sri,
+        max_sri_rounds=max_sri_rounds,
     )
 
     tree = GlobalRMPBnBTree(root_node=root, config=config, selector=selector)

@@ -75,6 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--phase1-col-cap", type=int, default=3, help="Phase-I columns per pricing call (0=off).")
     parser.add_argument("--yao-pricing", type=int, choices=[0, 1], default=1, help="1 = μ in sparse SP (Yao-style).")
     parser.add_argument("--use-capacity-cuts", type=int, choices=[0, 1], default=0, help="Enable capacity-link cuts.")
+    parser.add_argument("--use-sri-cuts", type=int, choices=[0, 1], default=0, help="Enable day-specific classical SRI-3 cuts.")
+    parser.add_argument("--sri-cardinality", type=int, choices=[3], default=3, help="Currently fixed to classical SRI cardinality 3.")
+    parser.add_argument("--enable-sri", type=int, choices=[0, 1], default=1)
+    parser.add_argument("--root-only-sri", type=int, choices=[0, 1], default=1)
+    parser.add_argument("--max-sri-rounds", type=int, default=3)
+    parser.add_argument("--max-cuts-per-round", type=int, default=20)
+    parser.add_argument("--max-cuts-per-day", type=int, default=5)
+    parser.add_argument("--min-sri-violation", type=float, default=1e-4)
+    parser.add_argument("--enable-sri-similarity-filter", type=int, choices=[0, 1], default=1)
+    parser.add_argument("--max-shared-edges-between-sri3", type=int, default=1)
     parser.add_argument("--cut-root-only", type=int, choices=[0, 1], default=0, help="Run separation only at root node.")
     parser.add_argument("--cut-separation-max-depth", type=int, default=None)
     return parser
@@ -126,6 +136,16 @@ def main() -> None:
         yao_style_pricing=int(args.yao_pricing),
         pricing_ng_size=int(args.pricing_ng_size),
         use_capacity_cuts=int(args.use_capacity_cuts),
+        use_sri_cuts=int(args.use_sri_cuts),
+        sri_cardinality=int(args.sri_cardinality),
+        enable_sri=int(args.enable_sri),
+        root_only_sri=int(args.root_only_sri),
+        max_sri_rounds=int(args.max_sri_rounds),
+        max_cuts_per_round=int(args.max_cuts_per_round),
+        max_cuts_per_day=int(args.max_cuts_per_day),
+        min_sri_violation=float(args.min_sri_violation),
+        enable_sri_similarity_filter=int(args.enable_sri_similarity_filter),
+        max_shared_edges_between_sri3=int(args.max_shared_edges_between_sri3),
         cut_root_only=int(args.cut_root_only),
         cut_separation_max_depth=args.cut_separation_max_depth,
     )

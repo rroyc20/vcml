@@ -13,7 +13,9 @@ from gurobipy import GRB
 from refactor_algorithm.core.master.arc_based_check import solve_arc_based_pcarp_optimal
 from refactor_algorithm.core.master.separation import (
     CapacityLinkSeparator,
+    SeparationRoundResult,
     SeparationManager,
+    SRI3Separator,
 )
 from refactor_algorithm.core.pricing.node import BnBConfig, BnBNode, BnBTree, BestBoundSelector, DepthFirstSelector
 from refactor_algorithm.core.util.alns import run_alns_initial_solution
@@ -209,6 +211,16 @@ def _apply_inspect_bnp_defaults(inst: Dict[str, Any]) -> Dict[str, Any]:
         "use_aggregation": 0,
         "use_vehicle_lex_symmetry": 1,
         "use_capacity_cuts": 0,
+        "use_sri_cuts": 0,
+        "sri_cardinality": 3,
+        "enable_sri": 1,
+        "root_only_sri": 1,
+        "max_sri_rounds": 3,
+        "max_cuts_per_round": 20,
+        "max_cuts_per_day": 5,
+        "min_sri_violation": 1e-4,
+        "enable_sri_similarity_filter": 1,
+        "max_shared_edges_between_sri3": 1,
         "cut_root_only": 0,
         "cut_separation_max_depth": 0,
     }
@@ -297,7 +309,9 @@ class SimpleSPMaster:
         self.aggregate_branch_constrs: Dict[tuple, str] = {}
         self._aggregate_constr_handles: Dict[tuple, Any] = {}
         self.capacity_cuts_added: int = 0
+        self.sri_cuts_added: int = 0
         self.separation_manager: Optional[SeparationManager] = None
+        self.sri_separation_manager: Optional[SeparationManager] = None
         self.initial_incumbent: Optional[Dict[str, Any]] = None
         # Performance: avoid repeated name-based lookups during column add / pricing data prep.
         self._constr_by_name: Dict[str, Any] = {}
@@ -316,13 +330,23 @@ class SimpleSPMaster:
         self._add_initial_columns()
         if bool(self.inst.get("use_cutting_plane_separation", 0)):
             separators = []
+            sri_separators = []
             if bool(self.inst.get("use_capacity_cuts", 0)):
                 separators.append(CapacityLinkSeparator())
-            self.separation_manager = SeparationManager(
-                separators=separators,
-                tol=float(self.inst.get("cut_separation_tol", 1e-7)),
-                max_rounds=int(self.inst.get("cut_max_rounds_per_solve", 50)),
-            )
+            if bool(self.inst.get("use_sri_cuts", 0)):
+                sri_separators.append(SRI3Separator(cardinality=int(self.inst.get("sri_cardinality", 3))))
+            if separators:
+                self.separation_manager = SeparationManager(
+                    separators=separators,
+                    tol=float(self.inst.get("cut_separation_tol", 1e-7)),
+                    max_rounds=int(self.inst.get("cut_max_rounds_per_solve", 50)),
+                )
+            if sri_separators:
+                self.sri_separation_manager = SeparationManager(
+                    separators=sri_separators,
+                    tol=float(self.inst.get("cut_separation_tol", 1e-7)),
+                    max_rounds=1,
+                )
         elif bool(self.inst.get("use_capacity_cuts", 0)):
             self._add_capacity_type_cuts()
 
@@ -586,6 +610,7 @@ class SimpleSPMaster:
         if self.aggregate_branch_constrs:
             arc_counts: Dict[Edge, float] = {}
             node_counts: Dict[int, float] = {}
+            served_set = set(serviced_edges)
             for arc in path_arcs:
                 if isinstance(arc, tuple) and len(arc) >= 2:
                     e_c = _canon_edge(arc[0], arc[1])
@@ -617,6 +642,11 @@ class SimpleSPMaster:
                 elif kind == "capacity_link_t":
                     if agg_key[1] == t_int:
                         coeff = cap_neg
+                elif kind == "sri3_t":
+                    if agg_key[1] == t_int:
+                        overlap = sum(1 for e in agg_key[2] if e in served_set)
+                        if overlap >= 2:
+                            coeff = 1.0
                 if coeff != 0.0:
                     col.addTerms(coeff, constr)
 
@@ -1090,6 +1120,23 @@ class SimpleSPMaster:
         self.capacity_cuts_added += int(added)
         return int(added)
 
+    def separate_sri_cuts(
+        self,
+        node_depth: Optional[int] = None,
+        node_id: Optional[int] = None,
+        optimize_before: bool = False,
+    ) -> SeparationRoundResult:
+        del node_id
+        if not bool(int(self.inst.get("enable_sri", self.inst.get("use_sri_cuts", 0)))):
+            return SeparationRoundResult()
+        if bool(int(self.inst.get("root_only_sri", 1))) and node_depth is not None and int(node_depth) > 0:
+            return SeparationRoundResult()
+        if self.sri_separation_manager is None:
+            return SeparationRoundResult()
+        result = self.sri_separation_manager.separate_once(self, optimize_before=optimize_before)
+        self.sri_cuts_added += int(result.added_count)
+        return result
+
     def build_executable_solution(self, values: Dict[str, float], source: str = "bnb") -> Dict[str, Any]:
         eps = 1e-6
         routes: List[Dict[str, Any]] = []
@@ -1192,6 +1239,7 @@ class SimpleSPMaster:
         new.route_columns = list(self.route_columns)
         new.artificial_var_name_by_cover = dict(self.artificial_var_name_by_cover)
         new.capacity_cuts_added = int(self.capacity_cuts_added)
+        new.sri_cuts_added = int(self.sri_cuts_added)
         # Aggregate branching constraints are in the copied Gurobi model already;
         # copy the registry so new columns participate correctly.
         new.aggregate_branch_constrs = dict(self.aggregate_branch_constrs)
@@ -1220,6 +1268,7 @@ class SimpleSPMaster:
             key: list(vals) for key, vals in self._branch_schedule_vars_by_edge_day_driver.items()
         }
         new.separation_manager = None
+        new.sri_separation_manager = None
         new.initial_incumbent = copy.deepcopy(self.initial_incumbent)
         if self.separation_manager is not None:
             new.separation_manager = SeparationManager(
@@ -1229,6 +1278,14 @@ class SimpleSPMaster:
             )
             new.separation_manager.total_rounds = int(self.separation_manager.total_rounds)
             new.separation_manager.total_cuts_added = int(self.separation_manager.total_cuts_added)
+        if self.sri_separation_manager is not None:
+            new.sri_separation_manager = SeparationManager(
+                separators=list(self.sri_separation_manager.separators),
+                tol=float(self.sri_separation_manager.tol),
+                max_rounds=int(self.sri_separation_manager.max_rounds),
+            )
+            new.sri_separation_manager.total_rounds = int(self.sri_separation_manager.total_rounds)
+            new.sri_separation_manager.total_cuts_added = int(self.sri_separation_manager.total_cuts_added)
         return new
 
 
@@ -1399,6 +1456,9 @@ def solve_with_current_algorithm(inst: Dict[str, Any]) -> Dict[str, Any]:
     use_ub_zero = bool(int(inst.get("use_ub_zero_branching", 0)))
     partial_pricing_ratio = float(inst.get("partial_pricing_ratio", 1.0))
     phase1_col_cap = int(inst.get("phase1_col_cap", 1000))
+    enable_sri = bool(int(inst.get("enable_sri", inst.get("use_sri_cuts", 0))))
+    root_only_sri = bool(int(inst.get("root_only_sri", 1)))
+    max_sri_rounds = int(inst.get("max_sri_rounds", 3))
 
     tree = GlobalRMPBnBTree(
         root_node=root,
@@ -1416,6 +1476,9 @@ def solve_with_current_algorithm(inst: Dict[str, Any]) -> Dict[str, Any]:
             use_ub_zero_branching=use_ub_zero,
             partial_pricing_ratio=partial_pricing_ratio,
             phase1_col_cap=phase1_col_cap,
+            enable_sri=enable_sri,
+            root_only_sri=root_only_sri,
+            max_sri_rounds=max_sri_rounds,
         ),
         selector=selector,
     )
