@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import heapq
-from itertools import combinations
 import random as _random
 import re
 from pathlib import Path
@@ -196,14 +195,20 @@ def _build_regular_schedule_patterns(
     - fixed group : decision group = 50 : 70 (normalized shares)
     - fixed group: 항상 매일 방문 (frozenset(전체 기간)).
     - decision group:
-      choose from two-day visit patterns only (no single-day options)
+      choose from equal-interval two-day visit patterns only
     """
     days = [int(d) for d in periods]
     if not days:
         raise ValueError("periods must be non-empty.")
 
     all_days_pat = frozenset(days)
-    two_day_options = [frozenset(c) for c in combinations(days, 2)]
+    if len(days) % 2 != 0:
+        raise ValueError("regular schedule_mode requires an even number of days.")
+    half = len(days) // 2
+    two_day_options = [
+        frozenset((days[start], days[start + half]))
+        for start in range(half)
+    ]
 
     fixed_weight = 50.0
     decision_weight = 70.0
@@ -218,10 +223,7 @@ def _build_regular_schedule_patterns(
         if idx < num_fixed:
             out[e] = [all_days_pat]
         else:
-            if two_day_options:
-                out[e] = list(two_day_options)
-            else:
-                out[e] = [all_days_pat]
+            out[e] = list(two_day_options) if two_day_options else [all_days_pat]
     return out
 
 
