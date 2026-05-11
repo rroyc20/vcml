@@ -174,11 +174,14 @@ ARMP_WHOLE_ROUTE_FAMILY = "armp_whole_route"
 ARMP_DAILY_ROUTE_FAMILY = "armp_daily_route"
 # A-RMP: 집계 스케줄 q_{e,p} = Σ_k s_{e,p,k} 에 대한 0/1 고정 (차량 인덱스 없음)
 ARMP_SCHEDULE_FIX_FAMILY = "armp_schedule_fix"
+ARMP_RYAN_FOSTER_FAMILY = "armp_ryan_foster_pair"
 # 이전 명칭 호환
 ARMP_SCHEDULE_FAMILY = ARMP_SCHEDULE_FIX_FAMILY
 
 RMP_WHOLE_ROUTE_FAMILY = "rmp_whole_route"
 RMP_DAILY_ROUTE_FAMILY = "rmp_daily_route"
+RMP_EDGE_SCHEDULE_ASSIGN_FAMILY = "rmp_edge_schedule_assign"
+RMP_RYAN_FOSTER_FAMILY = "rmp_ryan_foster_pair"
 RMP_EDGE_DRIVER_ASSIGN_FAMILY = "rmp_edge_driver_assign"
 RMP_VISIT_NODE_FAMILY = "rmp_visit_node"
 RMP_VISIT_ARC_FAMILY = "rmp_visit_arc"
@@ -213,6 +216,12 @@ EDGE_DRIVER_ASSIGN_BRANCH_FAMILIES = frozenset(
         RMP_EDGE_DRIVER_ASSIGN_FAMILY,
     }
 )
+EDGE_SCHEDULE_ASSIGN_BRANCH_FAMILIES = frozenset(
+    {
+        "edge_schedule_assign",
+        RMP_EDGE_SCHEDULE_ASSIGN_FAMILY,
+    }
+)
 EDGE_DAY_DRIVER_SERVICE_BRANCH_FAMILIES = frozenset(
     {
         "edge_day_driver_service",
@@ -232,6 +241,13 @@ VISIT_ARC_BRANCH_FAMILIES = frozenset(
         RMP_VISIT_ARC_FAMILY,
     }
 )
+RYAN_FOSTER_BRANCH_FAMILIES = frozenset(
+    {
+        "ryan_foster_pair",
+        ARMP_RYAN_FOSTER_FAMILY,
+        RMP_RYAN_FOSTER_FAMILY,
+    }
+)
 
 # Branching uses 0/1 split in build_child_constraints for these families only.
 BINARY_LIKE_BRANCH_FAMILIES = frozenset(
@@ -241,9 +257,13 @@ BINARY_LIKE_BRANCH_FAMILIES = frozenset(
         "schedule_fix",
         "armp_schedule",  # legacy
         "successive_edges",
+        "edge_schedule_assign",
         "edge_driver_assign",
         "edge_day_driver_service",
         ARMP_SCHEDULE_FIX_FAMILY,
+        ARMP_RYAN_FOSTER_FAMILY,
+        RMP_EDGE_SCHEDULE_ASSIGN_FAMILY,
+        RMP_RYAN_FOSTER_FAMILY,
         RMP_EDGE_DRIVER_ASSIGN_FAMILY,
         RMP_EDGE_DAY_DRIVER_SERVICE_FAMILY,
     }
@@ -266,6 +286,10 @@ def is_edge_driver_assign_branch_family(family: Any) -> bool:
     return str(family) in EDGE_DRIVER_ASSIGN_BRANCH_FAMILIES
 
 
+def is_edge_schedule_assign_branch_family(family: Any) -> bool:
+    return str(family) in EDGE_SCHEDULE_ASSIGN_BRANCH_FAMILIES
+
+
 def is_edge_day_driver_service_branch_family(family: Any) -> bool:
     return str(family) in EDGE_DAY_DRIVER_SERVICE_BRANCH_FAMILIES
 
@@ -276,6 +300,10 @@ def is_visit_node_branch_family(family: Any) -> bool:
 
 def is_visit_arc_branch_family(family: Any) -> bool:
     return str(family) in VISIT_ARC_BRANCH_FAMILIES
+
+
+def is_ryan_foster_branch_family(family: Any) -> bool:
+    return str(family) in RYAN_FOSTER_BRANCH_FAMILIES
 
 
 def dist_to_nearest_integer(value: float) -> float:
@@ -559,17 +587,20 @@ class BnBNode:
 
         RMP (per-vehicle s_{e,p,k}): 아래를 스케줄 변수 경계로 전파.
 
+        - edge_schedule_assign(e,p) <= 0: forbid all s[e,p,k]
+        - edge_schedule_assign(e,p) >= 1: keep only s[e,p,k] and forbid all other patterns of e
         - edge_driver_assign(e,k) <= 0: forbid all s[e,p,k]
         - edge_driver_assign(e,k) >= 1: forbid all s[e,p,k'] for k' != k
         - edge_day_driver_service(e,t,k) <= 0: forbid s[e,p,k] with t in pattern p
         - edge_day_driver_service(e,t,k) >= 1: keep only s[e,p,k] with t in pattern p
 
         A-RMP 집계 스케줄 q_{e,p} = Σ_k s_{e,p,k} 에 대한 고정은 ``schedule_fix`` / ``is_schedule_branch_family``
-        로 단일 변수 경계를 바꾸는 경로에서 처리한다 (본 함수는 k-인덱스 분기만 담당).
+        로 단일 변수 경계를 바꾸는 경로에서 처리한다.
         """
         family = str(getattr(bc, "family", ""))
         if not (
-            is_edge_driver_assign_branch_family(family)
+            is_edge_schedule_assign_branch_family(family)
+            or is_edge_driver_assign_branch_family(family)
             or is_edge_day_driver_service_branch_family(family)
         ):
             return False
@@ -584,10 +615,13 @@ class BnBNode:
         model = self._get_gurobi_model()
         changed = 0
         schedule_vars_by_edge = data.get("schedule_vars_by_edge", {})
+        schedule_vars_by_edge_pattern = data.get("schedule_vars_by_edge_pattern", {})
         schedule_vars_by_edge_driver = data.get("schedule_vars_by_edge_driver", {})
         schedule_vars_by_edge_day_driver = data.get("schedule_vars_by_edge_day_driver", {})
         if not isinstance(schedule_vars_by_edge, dict):
             schedule_vars_by_edge = {}
+        if not isinstance(schedule_vars_by_edge_pattern, dict):
+            schedule_vars_by_edge_pattern = {}
         if not isinstance(schedule_vars_by_edge_driver, dict):
             schedule_vars_by_edge_driver = {}
         if not isinstance(schedule_vars_by_edge_day_driver, dict):
@@ -606,7 +640,20 @@ class BnBNode:
                     var.UB = 0.0
                     changed += 1
 
-        if is_edge_driver_assign_branch_family(family):
+        if is_edge_schedule_assign_branch_family(family):
+            key = bc.target.get("edge_schedule_key") if isinstance(bc.target, dict) else bc.target
+            if not (isinstance(key, tuple) and len(key) >= 2):
+                return False
+            req_id = self._canon_arc_key(key[0])
+            pat_idx = int(key[1])
+            if bc.sense == "<=" and float(bc.rhs) <= 0.0:
+                disable_var_refs(schedule_vars_by_edge_pattern.get((req_id, pat_idx), ()))
+            elif bc.sense == ">=" and float(bc.rhs) >= 1.0:
+                keep = {str(v) for v in schedule_vars_by_edge_pattern.get((req_id, pat_idx), ())}
+                disable_var_refs(schedule_vars_by_edge.get(req_id, ()), keep=keep)
+            else:
+                return False
+        elif is_edge_driver_assign_branch_family(family):
             key = bc.target.get("edge_driver_key") if isinstance(bc.target, dict) else bc.target
             if not (isinstance(key, tuple) and len(key) >= 2):
                 return False
@@ -1228,6 +1275,12 @@ class BnBNode:
                 var = self._resolve_model_var(var_ref)
                 return var
 
+            if is_edge_schedule_assign_branch_family(family):
+                key = target.get("edge_schedule_key") if isinstance(target, dict) else target
+                return self._build_linear_expr_from_map(
+                    data.get("schedule_pattern_sum_expr", {}).get(key, {})
+                )
+
             if is_edge_driver_assign_branch_family(family):
                 key = target.get("edge_driver_key") if isinstance(target, dict) else target
                 return self._build_linear_expr_from_map(
@@ -1252,6 +1305,12 @@ class BnBNode:
                     data.get("arc_visit_expr", {}).get(key, {})
                 )
 
+            if is_ryan_foster_branch_family(family):
+                key = target.get("rf_pair_day_key") if isinstance(target, dict) else target
+                return self._build_linear_expr_from_map(
+                    data.get("ryan_foster_pair_expr", {}).get(key, {})
+                )
+
             if family == "successive_edges":
                 key = target.get("succ_key") if isinstance(target, dict) else target
                 expr_obj = data.get("successive_expr", {}).get(key)
@@ -1263,13 +1322,51 @@ class BnBNode:
 
         for idx, bc in enumerate(self.constraints):
             cname = f"branch_n{self.node_id}_{idx}_{bc.family}"
-            if model.getConstrByName(cname) is not None:
-                continue
 
             if self._apply_schedule_assignment_branch(bc, data):
                 continue
 
             if use_ub_zero and self._apply_ub_zero_branch(bc, data):
+                continue
+
+            if is_ryan_foster_branch_family(bc.family):
+                target = bc.target
+                rf_day_keys: List[Tuple[Any, Any, int]] = []
+                if isinstance(target, dict):
+                    raw_keys = target.get("rf_pair_day_keys")
+                    if isinstance(raw_keys, (list, tuple)):
+                        for raw_key in raw_keys:
+                            if isinstance(raw_key, tuple) and len(raw_key) >= 3:
+                                rf_day_keys.append((raw_key[0], raw_key[1], int(raw_key[2])))
+                    else:
+                        raw_key = target.get("rf_pair_day_key")
+                        if isinstance(raw_key, tuple) and len(raw_key) >= 3:
+                            rf_day_keys.append((raw_key[0], raw_key[1], int(raw_key[2])))
+                elif isinstance(target, tuple) and len(target) >= 3:
+                    rf_day_keys.append((target[0], target[1], int(target[2])))
+
+                if rf_day_keys:
+                    rmp = getattr(self, "rmp", None)
+                    register = getattr(rmp, "register_aggregate_constr", None)
+                    for rf_idx, rfk in enumerate(rf_day_keys):
+                        sub_cname = cname if len(rf_day_keys) == 1 else f"{cname}_rf{rf_idx}"
+                        if model.getConstrByName(sub_cname) is not None:
+                            continue
+                        expr = self._build_linear_expr_from_map(
+                            data.get("ryan_foster_pair_expr", {}).get(rfk, {}),
+                            allow_empty_zero=True,
+                        )
+                        if bc.sense == "<=":
+                            model.addConstr(expr <= float(bc.rhs), name=sub_cname)
+                        elif bc.sense == ">=":
+                            model.addConstr(expr >= float(bc.rhs), name=sub_cname)
+                        else:
+                            raise ValueError(f"Unsupported branch sense: {bc.sense}")
+                        if register is not None:
+                            register(("ryan_foster_pair", rfk[0], rfk[1], rfk[2]), sub_cname)
+                    continue
+
+            if model.getConstrByName(cname) is not None:
                 continue
 
             expr = build_expr_for_constraint(bc)
@@ -1337,6 +1434,10 @@ class BnBNode:
                     elif isinstance(adk, tuple) and len(adk) == 2:
                         # AggregatedMaster A-RMP: (canon_edge, day) — no per-driver λ
                         register(("visit_arc", adk[0], adk[1]), cname)
+                elif is_ryan_foster_branch_family(family):
+                    rfk = target.get("rf_pair_day_key") if isinstance(target, dict) else None
+                    if isinstance(rfk, tuple) and len(rfk) == 3:
+                        register(("ryan_foster_pair", rfk[0], rfk[1], rfk[2]), cname)
 
         model.update()
         self._branch_constraints_applied = True
@@ -1845,15 +1946,23 @@ class BnBNode:
             return model.getVarByName(ref)
         return None
 
-    def _build_linear_expr_from_map(self, expr_map: Any) -> Optional[Any]:
+    def _build_linear_expr_from_map(self, expr_map: Any, *, allow_empty_zero: bool = False) -> Optional[Any]:
         if not isinstance(expr_map, dict) or not expr_map:
+            if allow_empty_zero:
+                import gurobipy as gp
+                return gp.LinExpr()
             return None
         terms = []
         for vref, coeff in expr_map.items():
             var = self._resolve_model_var(vref)
             if var is not None:
                 terms.append(float(coeff) * var)
-        return sum(terms) if terms else None
+        if terms:
+            return sum(terms)
+        if allow_empty_zero:
+            import gurobipy as gp
+            return gp.LinExpr()
+        return None
 
     def _artificial_sum(self, eps: float = 1e-8) -> float:
         """Return sum of positive artificial cover variables, when available."""
@@ -1999,6 +2108,99 @@ class BnBNode:
                 continue
             total += float(coeff) * float(var.X)
         return total
+
+    def _selected_service_days_by_edge(
+        self,
+        data: Dict[str, Any],
+        eps: float,
+    ) -> Dict[Any, frozenset[int]]:
+        """Return active service days implied by fixed schedule-pattern assignments."""
+        q_exprs = data.get("schedule_pattern_sum_expr", {})
+        if not isinstance(q_exprs, dict) or not q_exprs:
+            return {}
+
+        rmp = getattr(self, "rmp", None)
+        schedule_patterns = getattr(rmp, "schedule_patterns", None)
+        if not isinstance(schedule_patterns, dict) or not schedule_patterns:
+            return {}
+
+        active_days: Dict[Any, set[int]] = {}
+        threshold = 1.0 - float(eps)
+        for key, expr in q_exprs.items():
+            if not (isinstance(key, tuple) and len(key) >= 2 and isinstance(expr, dict)):
+                continue
+            edge = key[0]
+            p_idx = int(key[1])
+            pats = schedule_patterns.get(edge)
+            if not isinstance(pats, (list, tuple)) or not (0 <= p_idx < len(pats)):
+                continue
+            val = float(self._expr_value(expr, self._resolve_model_var))
+            if val < threshold:
+                continue
+            active_days.setdefault(edge, set()).update(int(d) for d in pats[p_idx])
+
+        return {edge: frozenset(days) for edge, days in active_days.items()}
+
+    def _collect_multiday_ryan_foster_candidates(
+        self,
+        data: Dict[str, Any],
+        *,
+        family: str,
+        eps: float,
+    ) -> List[BranchCandidate]:
+        """Group per-day RF expressions by edge pair and branch across all overlap days."""
+        rf_exprs = data.get("ryan_foster_pair_expr", {})
+        if not isinstance(rf_exprs, dict) or not rf_exprs:
+            return []
+
+        active_days_by_edge = self._selected_service_days_by_edge(data, eps)
+        if not active_days_by_edge:
+            return []
+
+        pairs: set[Tuple[Any, Any]] = set()
+        for key in rf_exprs.keys():
+            if isinstance(key, tuple) and len(key) >= 3:
+                pairs.add((key[0], key[1]))
+
+        candidates: List[BranchCandidate] = []
+        for e_i, e_j in sorted(pairs, key=str):
+            overlap_days = sorted(active_days_by_edge.get(e_i, frozenset()) & active_days_by_edge.get(e_j, frozenset()))
+            if not overlap_days:
+                continue
+
+            day_keys = [(e_i, e_j, int(t)) for t in overlap_days]
+            values: List[float] = []
+            for day_key in day_keys:
+                expr = rf_exprs.get(day_key, {})
+                if isinstance(expr, dict) and expr:
+                    val = float(self._expr_value(expr, self._resolve_model_var))
+                else:
+                    val = 0.0
+                values.append(val)
+
+            if not values:
+                continue
+
+            has_fractional = any(self._is_fractional(val, eps) for val in values)
+            span = max(values) - min(values)
+            if not has_fractional and span <= eps:
+                continue
+
+            rep_value = float(sum(values) / len(values))
+            candidates.append(
+                BranchCandidate(
+                    family=family,
+                    target={
+                        "rf_pair_edges": (e_i, e_j),
+                        "rf_pair_day_keys": day_keys,
+                        "rf_pair_days": overlap_days,
+                    },
+                    value=rep_value,
+                    day=overlap_days[0] if overlap_days else None,
+                )
+            )
+
+        return candidates
 
     @staticmethod
     def _adjacency_fingerprint(adjacency: Dict[Any, List[Dict[str, Any]]]) -> Tuple[int, int, int, int]:
@@ -4164,7 +4366,8 @@ class BnBNode:
         1. whole_route   — Σ_{t,r} λ^t_r (집계 경로 질량)
         2. daily_route   — 일별 Σ_r λ^t_r
         3. schedule_fix  — 집계 스케줄 q_{e,p} = Σ_k s_{e,p,k} (차량 인덱스 없음, 패턴별 0/1 고정)
-        4. lambda_var      — 개별 집계 경로 변수 agg_lam_t{t}_r* (0/1 고정)
+        4. ryan_foster_pair — 같은 날 두 required edge를 같은 route가 함께 서비스하는지 분기
+        5. lambda_var      — 개별 집계 경로 변수 agg_lam_t{t}_r* (0/1 고정)
 
         SimpleSP와 분리한 이유: A-RMP는 일별 λ^t_r·집계 q_{e,p} 만 있고 per-(t,k) 분기 표현이 없음.
         """
@@ -4216,6 +4419,24 @@ class BnBNode:
         if level_schedule_fix:
             return level_schedule_fix
 
+        level_ryan_foster: List[BranchCandidate] = []
+        rf_exprs = data.get("ryan_foster_pair_expr", {})
+        if isinstance(rf_exprs, dict):
+            for key, expr in rf_exprs.items():
+                if not isinstance(expr, dict):
+                    continue
+                val = float(self._expr_value(expr, self._resolve_model_var))
+                if self._is_fractional(val, eps):
+                    day = int(key[2]) if isinstance(key, tuple) and len(key) >= 3 else None
+                    level_ryan_foster.append(BranchCandidate(
+                        family=ARMP_RYAN_FOSTER_FAMILY,
+                        target={"rf_pair_day_key": key},
+                        value=val,
+                        day=day,
+                    ))
+        if level_ryan_foster:
+            return level_ryan_foster
+
         level_lambda_var: List[BranchCandidate] = []
         lam_by_day = data.get("lambda_vars_by_day")
         if isinstance(lam_by_day, dict):
@@ -4264,10 +4485,12 @@ class BnBNode:
         Hierarchy (aggregate-first, 6b→6a):
           Level 6b whole_route              Σ_{t,k,r} λ^{tk}_r
           Level 6a daily_route              Σ_{k,r} λ^{tk}_r per day t
-          Level 5  edge_driver_assign      z_ek = Σ_p s_e^{pk} (edge e served by vehicle k; no pattern branch)
-          Level 4  visit_node              w_itk expression
-          Level 3  visit_arc               x+y expression
-          Level 2  edge_day_driver_service x_etk
+          Level 5a edge_schedule_assign    q_ep = Σ_k s_e^{pk}
+          Level 5  ryan_foster_pair       common active days 전체에 대해 같이/따로 서비스
+          Level 4  edge_driver_assign     z_ek = Σ_p s_e^{pk} (edge e served by vehicle k; no pattern branch)
+          Level 3  visit_node             w_itk expression
+          Level 2  visit_arc              x+y expression
+          Level 1  edge_day_driver_service x_etk
         """
         eps = config.eps_integrality
         lam_vars = self._get_lambda_vars()
@@ -4305,25 +4528,23 @@ class BnBNode:
         data = self._get_branching_data(include_route_lifting=False)
 
         # ------------------------------------------------------------------
-        # Level 5: z_ek = Σ_p s_e^{pk} — which vehicle covers required edge e (schedule pattern summed out).
+        # Level 5a: q_ep = Σ_k s_e^{pk}
         # ------------------------------------------------------------------
-        level5: List[BranchCandidate] = []
-        z_exprs = data.get("edge_driver_assign_expr", {})
-        if isinstance(z_exprs, dict):
-            for key, expr in z_exprs.items():
+        level5a: List[BranchCandidate] = []
+        q_exprs = data.get("schedule_pattern_sum_expr", {})
+        if isinstance(q_exprs, dict):
+            for key, expr in q_exprs.items():
                 if not isinstance(expr, dict):
                     continue
                 val = float(self._expr_value(expr, self._resolve_model_var))
                 if self._is_fractional(val, eps):
-                    drv = key[1] if isinstance(key, tuple) and len(key) >= 2 else None
-                    level5.append(BranchCandidate(
-                        family=RMP_EDGE_DRIVER_ASSIGN_FAMILY,
-                        target={"edge_driver_key": key},
+                    level5a.append(BranchCandidate(
+                        family=RMP_EDGE_SCHEDULE_ASSIGN_FAMILY,
+                        target={"edge_schedule_key": key},
                         value=val,
-                        driver=int(drv) if drv is not None else None,
                     ))
-        if level5:
-            return level5
+        if level5a:
+            return level5a
 
         ext = getattr(self.rmp, "extend_branching_route_expressions", None)
         if callable(ext):
@@ -4332,9 +4553,40 @@ class BnBNode:
             data = self._get_branching_data(include_route_lifting=True)
 
         # ------------------------------------------------------------------
-        # Level 4: node-visit expression branching
+        # Level 5: multi-day Ryan-Foster pair consistency across all overlap days
+        # ------------------------------------------------------------------
+        level5 = self._collect_multiday_ryan_foster_candidates(
+            data,
+            family=RMP_RYAN_FOSTER_FAMILY,
+            eps=eps,
+        )
+        if level5:
+            return level5
+
+        # ------------------------------------------------------------------
+        # Level 4: z_ek = Σ_p s_e^{pk} — which vehicle covers required edge e (schedule pattern summed out).
         # ------------------------------------------------------------------
         level4: List[BranchCandidate] = []
+        z_exprs = data.get("edge_driver_assign_expr", {})
+        if isinstance(z_exprs, dict):
+            for key, expr in z_exprs.items():
+                if not isinstance(expr, dict):
+                    continue
+                val = float(self._expr_value(expr, self._resolve_model_var))
+                if self._is_fractional(val, eps):
+                    level4.append(BranchCandidate(
+                        family=RMP_EDGE_DRIVER_ASSIGN_FAMILY,
+                        target={"edge_driver_key": key},
+                        value=val,
+                        driver=int(key[1]) if isinstance(key, tuple) and len(key) >= 2 else None,
+                    ))
+        if level4:
+            return level4
+
+        # ------------------------------------------------------------------
+        # Level 3: node-visit expression branching
+        # ------------------------------------------------------------------
+        level3: List[BranchCandidate] = []
         node_exprs = data.get("node_visit_expr", {})
         if isinstance(node_exprs, dict):
             for key, expr in node_exprs.items():
@@ -4344,19 +4596,19 @@ class BnBNode:
                 if self._is_fractional(val, eps):
                     # key = (node_id, t, k)
                     day = key[1] if isinstance(key, tuple) and len(key) >= 2 else None
-                    level4.append(BranchCandidate(
+                    level3.append(BranchCandidate(
                         family=RMP_VISIT_NODE_FAMILY,
                         target={"node_day_key": key},
                         value=val,
                         day=day,
                     ))
-        if level4:
-            return level4
+        if level3:
+            return level3
 
         # ------------------------------------------------------------------
-        # Level 3: edge-visit expression branching
+        # Level 2: edge-visit expression branching
         # ------------------------------------------------------------------
-        level3: List[BranchCandidate] = []
+        level2: List[BranchCandidate] = []
         arc_exprs = data.get("arc_visit_expr", {})
         if isinstance(arc_exprs, dict):
             for key, expr in arc_exprs.items():
@@ -4366,19 +4618,19 @@ class BnBNode:
                 if self._is_fractional(val, eps):
                     # key = (canon_edge, t, k)
                     day = key[1] if isinstance(key, tuple) and len(key) >= 2 else None
-                    level3.append(BranchCandidate(
+                    level2.append(BranchCandidate(
                         family=RMP_VISIT_ARC_FAMILY,
                         target={"arc_day_key": key},
                         value=val,
                         day=day,
                     ))
-        if level3:
-            return level3
+        if level2:
+            return level2
 
         # ------------------------------------------------------------------
-        # Level 2: x_etk = Σ_{p: t∈pat} s_e^{pk}
+        # Level 1: x_etk = Σ_{p: t∈pat} s_e^{pk}
         # ------------------------------------------------------------------
-        level2: List[BranchCandidate] = []
+        level1: List[BranchCandidate] = []
         x_exprs = data.get("edge_day_driver_service_expr", {})
         if isinstance(x_exprs, dict):
             for key, expr in x_exprs.items():
@@ -4388,15 +4640,15 @@ class BnBNode:
                 if self._is_fractional(val, eps):
                     day = int(key[1]) if isinstance(key, tuple) and len(key) >= 3 else None
                     drv = int(key[2]) if isinstance(key, tuple) and len(key) >= 3 else None
-                    level2.append(BranchCandidate(
+                    level1.append(BranchCandidate(
                         family=RMP_EDGE_DAY_DRIVER_SERVICE_FAMILY,
                         target={"edge_day_driver_key": key},
                         value=val,
                         day=day,
                         driver=drv,
                     ))
-        if level2:
-            return level2
+        if level1:
+            return level1
 
         return []
 

@@ -26,21 +26,20 @@ DEFAULT_INSPECT_ARGS = [
     "--vehicles", "0",  # 0=use instance default, or any positive int override
     "--max-nodes", "0",  # 0=unlimited, or any positive int
     "--max-cg-iter", "10000",  # any positive int
-
     ### 2. Cuts / separation
     "--use-capacity-cuts", "0",  # 0, 1
-    "--use-sri-cuts", "0",  # 0, 1
+    "--use-sri-cuts", "1",  # 0, 1
     "--sri-cardinality", "3",  # currently fixed to 3
-    "--enable-sri", "0",  # 0, 1
+    "--enable-sri", "1",  # 0, 1
     "--root-only-sri", "0",  # 0, 1
-    "--max-sri-rounds", "1",  # any nonnegative int
+    "--max-sri-rounds", "2",  # any nonnegative int
     "--max-cuts-per-round", "100",  # any positive int
-    "--max-cuts-per-day", "50",  # any positive int
+    "--max-cuts-per-day", "1000",  # any positive int
     "--min-sri-violation", "1e-4",  # any nonnegative float
     "--enable-sri-similarity-filter", "0",  # 0, 1
     "--max-shared-edges-between-sri3", "1",  # any nonnegative int
     "--cut-root-only", "0",  # 0, 1
-    "--cut-separation-max-depth", "10",  # 0=root only, or any nonnegative int
+    "--cut-separation-max-depth", "100",  # 0=root only, or any nonnegative int
     "--cut-pricing-mode", "auto",  # legacy, bitmask, auto
     "--cut-pricing-dual-tol", "1e-15",  # any nonnegative float
 

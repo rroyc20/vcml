@@ -20,6 +20,7 @@ from refactor_algorithm.core.pricing.node import (
     DepthFirstSelector,
     is_edge_day_driver_service_branch_family,
     is_edge_driver_assign_branch_family,
+    is_edge_schedule_assign_branch_family,
     is_schedule_branch_family,
 )
 
@@ -73,6 +74,19 @@ class GlobalRMPBnBTree(BnBTree):
                     vref = target
                 if isinstance(vref, str):
                     names.add(vref)
+                continue
+
+            if is_edge_schedule_assign_branch_family(family):
+                key = target.get("edge_schedule_key") if isinstance(target, dict) else target
+                if not (isinstance(key, tuple) and len(key) >= 2):
+                    continue
+                req_id = key[0]
+                sched = ensure_data().get("schedule_vars_by_edge", {})
+                req_key = tuple(req_id) if isinstance(req_id, tuple) else req_id
+                if isinstance(sched, dict):
+                    for vref in sched.get(req_key, ()):
+                        if isinstance(vref, str):
+                            names.add(vref)
                 continue
 
             if family == "successive_edges":

@@ -1,0 +1,3 @@
+# Local cache and ad-hoc run artifacts
+cache/
+newest_test.json

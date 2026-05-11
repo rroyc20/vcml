@@ -322,7 +322,10 @@ class SimpleSPMaster:
         self._branch_edge_day_driver_service_expr: Dict[Tuple[Edge, int, int], Dict[str, float]] = {}
         self._branch_arc_visit_expr: Dict[Tuple[Any, int, int], Dict[str, float]] = {}
         self._branch_node_visit_expr: Dict[Tuple[int, int, int], Dict[str, float]] = {}
+        self._branch_ryan_foster_pair_expr: Dict[Tuple[Edge, Edge, int], Dict[str, float]] = {}
         self._branch_schedule_vars_by_edge: Dict[Edge, List[str]] = {}
+        self._branch_schedule_vars_by_edge_pattern: Dict[Tuple[Edge, int], List[str]] = {}
+        self._branch_schedule_pattern_sum_expr: Dict[Tuple[Edge, int], Dict[str, float]] = {}
         self._branch_schedule_vars_by_edge_driver: Dict[Tuple[Edge, int], List[str]] = {}
         self._branch_schedule_vars_by_edge_day_driver: Dict[Tuple[Edge, int, int], List[str]] = {}
 
@@ -457,6 +460,9 @@ class SimpleSPMaster:
     def _register_branching_schedule_var(self, e: Edge, p_idx: int, k: int, vname: str) -> None:
         e_can = _canon_edge(e[0], e[1])
         self._branch_schedule_vars_by_edge.setdefault(e_can, []).append(vname)
+        self._branch_schedule_vars_by_edge_pattern.setdefault((e_can, int(p_idx)), []).append(vname)
+        q_expr = self._branch_schedule_pattern_sum_expr.setdefault((e_can, int(p_idx)), {})
+        q_expr[vname] = q_expr.get(vname, 0.0) + 1.0
         self._branch_schedule_vars_by_edge_driver.setdefault((e_can, int(k)), []).append(vname)
         z_expr = self._branch_edge_driver_assign_expr.setdefault((e_can, int(k)), {})
         z_expr[vname] = z_expr.get(vname, 0.0) + 1.0
@@ -474,12 +480,14 @@ class SimpleSPMaster:
         day: int,
         driver: int,
         vname: str,
+        serviced_edges: Sequence[Edge],
         path_arcs: Sequence[Tuple[int, int]],
     ) -> None:
         t_int = int(day)
         k_int = int(driver)
         arc_cnt: Dict[Edge, float] = {}
         node_cnt: Dict[int, float] = {}
+        served_unique = tuple(sorted({_canon_edge(e[0], e[1]) for e in serviced_edges}))
 
         for arc in path_arcs:
             if not (isinstance(arc, tuple) and len(arc) >= 2):
@@ -496,6 +504,13 @@ class SimpleSPMaster:
         for node_id, coeff in node_cnt.items():
             expr = self._branch_node_visit_expr.setdefault((node_id, t_int, k_int), {})
             expr[vname] = expr.get(vname, 0.0) + float(coeff)
+
+        for i in range(len(served_unique)):
+            e_i = served_unique[i]
+            for j in range(i + 1, len(served_unique)):
+                e_j = served_unique[j]
+                expr = self._branch_ryan_foster_pair_expr.setdefault((e_i, e_j, t_int), {})
+                expr[vname] = expr.get(vname, 0.0) + 1.0
 
     def _column_cost(self, path_arcs: Sequence[Tuple[int, int]], serviced_edges: Sequence[Edge]) -> float:
         travel = path_arcs_travel_total(
@@ -647,6 +662,10 @@ class SimpleSPMaster:
                         overlap = sum(1 for e in agg_key[2] if e in served_set)
                         if overlap >= 2:
                             coeff = 1.0
+                elif kind == "ryan_foster_pair":
+                    if len(agg_key) >= 4 and agg_key[3] == t_int:
+                        if agg_key[1] in served_set and agg_key[2] in served_set:
+                            coeff = 1.0
                 if coeff != 0.0:
                     col.addTerms(coeff, constr)
 
@@ -660,6 +679,7 @@ class SimpleSPMaster:
             day=int(day),
             driver=int(driver),
             vname=vname,
+            serviced_edges=serviced_edges,
             path_arcs=path_arcs,
         )
         self.route_columns.append(
@@ -1020,6 +1040,7 @@ class SimpleSPMaster:
             return
         data["arc_visit_expr"] = self._branch_arc_visit_expr
         data["node_visit_expr"] = self._branch_node_visit_expr
+        data["ryan_foster_pair_expr"] = self._branch_ryan_foster_pair_expr
         data["_route_lifting_done"] = True
 
     def get_branching_data(self, *, include_route_lifting: bool = True) -> Dict[str, Any]:
@@ -1044,13 +1065,15 @@ class SimpleSPMaster:
             "lambda_vars_by_day": self._lambda_vars_by_day_only(),
             "schedule_vars": schedule_vars,
             "schedule_vars_by_edge": self._branch_schedule_vars_by_edge,
+            "schedule_vars_by_edge_pattern": self._branch_schedule_vars_by_edge_pattern,
             "schedule_vars_by_edge_driver": self._branch_schedule_vars_by_edge_driver,
             "schedule_vars_by_edge_day_driver": self._branch_schedule_vars_by_edge_day_driver,
-            "schedule_pattern_sum_expr": {},
+            "schedule_pattern_sum_expr": self._branch_schedule_pattern_sum_expr,
             "edge_driver_assign_expr": edge_driver_assign_expr,
             "edge_day_driver_service_expr": edge_day_driver_service_expr,
             "node_visit_expr": node_visit_expr,
             "arc_visit_expr": arc_visit_expr,
+            "ryan_foster_pair_expr": self._branch_ryan_foster_pair_expr,
             # Enable aggregate (whole/daily) and expression (node/arc) branching levels
             "enable_aggregate_lambda_branching": True,
             "enable_expression_branching": True,
@@ -1258,8 +1281,17 @@ class SimpleSPMaster:
         new._branch_node_visit_expr = {
             key: dict(expr) for key, expr in self._branch_node_visit_expr.items()
         }
+        new._branch_ryan_foster_pair_expr = {
+            key: dict(expr) for key, expr in self._branch_ryan_foster_pair_expr.items()
+        }
         new._branch_schedule_vars_by_edge = {
             key: list(vals) for key, vals in self._branch_schedule_vars_by_edge.items()
+        }
+        new._branch_schedule_vars_by_edge_pattern = {
+            key: list(vals) for key, vals in self._branch_schedule_vars_by_edge_pattern.items()
+        }
+        new._branch_schedule_pattern_sum_expr = {
+            key: dict(expr) for key, expr in self._branch_schedule_pattern_sum_expr.items()
         }
         new._branch_schedule_vars_by_edge_driver = {
             key: list(vals) for key, vals in self._branch_schedule_vars_by_edge_driver.items()

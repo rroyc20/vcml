@@ -88,6 +88,22 @@ def build_cut_pricing_state(
             continue
 
         kind = agg_key[0]
+        if kind == "whole_route":
+            route_const += -pi
+            continue
+
+        if kind == "daily_route":
+            if len(agg_key) >= 3:
+                t = int(agg_key[1])
+                k = int(agg_key[2])
+                if t == day_id and driver_id is not None and k == driver_id:
+                    route_const += -pi
+            elif len(agg_key) >= 2:
+                t = int(agg_key[1])
+                if t == day_id:
+                    route_const += -pi
+            continue
+
         if kind == "capacity_link_tk":
             t, k = int(agg_key[1]), int(agg_key[2])
             if t == day_id and driver_id is not None and k == driver_id:

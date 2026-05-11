@@ -156,6 +156,7 @@ class AggregatedMaster:
         self._agg_var_by_name: Dict[str, Any] = {}
         self._branch_arc_visit_expr: Dict[Tuple[Any, int], Dict[str, float]] = {}
         self._branch_node_visit_expr: Dict[Tuple[int, int], Dict[str, float]] = {}
+        self._branch_ryan_foster_pair_expr: Dict[Tuple[Edge, Edge, int], Dict[str, float]] = {}
         self._schedule_vars_by_edge_day: Dict[Tuple[Edge, int], List[str]] = {}
 
         # Phase-I 인공변수
@@ -336,11 +337,13 @@ class AggregatedMaster:
         *,
         day: int,
         vname: str,
+        serviced_edges: Sequence[Edge],
         path_arcs: Sequence[Tuple[int, int]],
     ) -> None:
         t_int = int(day)
         arc_cnt: Dict[Edge, float] = {}
         node_cnt: Dict[int, float] = {}
+        served_unique = tuple(sorted({_canon_edge(e[0], e[1]) for e in serviced_edges}))
 
         for arc in path_arcs:
             if not (isinstance(arc, tuple) and len(arc) >= 2):
@@ -357,6 +360,13 @@ class AggregatedMaster:
         for node_id, coeff in node_cnt.items():
             expr = self._branch_node_visit_expr.setdefault((node_id, t_int), {})
             expr[vname] = expr.get(vname, 0.0) + float(coeff)
+
+        for i in range(len(served_unique)):
+            e_i = served_unique[i]
+            for j in range(i + 1, len(served_unique)):
+                e_j = served_unique[j]
+                expr = self._branch_ryan_foster_pair_expr.setdefault((e_i, e_j, t_int), {})
+                expr[vname] = expr.get(vname, 0.0) + 1.0
 
     def _add_agg_route_var(
         self,
@@ -447,6 +457,10 @@ class AggregatedMaster:
                         overlap = sum(1 for e in agg_key[2] if e in served_set)
                         if overlap >= 2:
                             coeff = 1.0
+                elif kind == "ryan_foster_pair":
+                    if len(agg_key) >= 4 and agg_key[3] == int(day):
+                        if agg_key[1] in served_set and agg_key[2] in served_set:
+                            coeff = 1.0
                 if coeff != 0.0:
                     col.addTerms(coeff, constr)
 
@@ -460,6 +474,7 @@ class AggregatedMaster:
         self._register_branching_route_var(
             day=int(day),
             vname=vname,
+            serviced_edges=serviced_edges,
             path_arcs=path_arcs,
         )
         self.agg_route_columns.append(AggRouteColumn(
@@ -665,6 +680,7 @@ class AggregatedMaster:
             "edge_day_driver_service_expr": edge_day_driver_service_expr,
             "node_visit_expr": node_visit_expr,
             "arc_visit_expr": arc_visit_expr,
+            "ryan_foster_pair_expr": self._branch_ryan_foster_pair_expr,
             "enable_aggregate_lambda_branching": True,
             "enable_expression_branching": False,  # A-RMP은 집계 변수 기반 분기
         }

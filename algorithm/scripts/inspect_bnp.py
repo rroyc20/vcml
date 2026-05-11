@@ -395,6 +395,7 @@ class InspectBnBNode(BnBNode):
 
         self.solve_stats = {
             "cg_iterations": 0,
+            "farkas_rounds": 0,
             "rmp_time_s": 0.0,
             "rmp_lp_time_s": 0.0,
             "cut_separation_time_s": 0.0,
@@ -435,42 +436,10 @@ class InspectBnBNode(BnBNode):
             self.solve_stats["cg_iterations"] += 1
 
             t0 = time.perf_counter()
-            try:
-                lp_obj, dual_values = self.solve_rmp()
-            except RuntimeError as exc:
-                rmp_elapsed = time.perf_counter() - t0
-                cut_sep_elapsed = float(getattr(self, "_last_cut_separation_time_s", 0.0))
-                if not math.isfinite(cut_sep_elapsed):
-                    cut_sep_elapsed = 0.0
-                cut_sep_elapsed = max(0.0, min(cut_sep_elapsed, rmp_elapsed))
-                rmp_lp_elapsed = max(0.0, rmp_elapsed - cut_sep_elapsed)
-                self.solve_stats["rmp_time_s"] += rmp_elapsed
-                self.solve_stats["rmp_lp_time_s"] += rmp_lp_elapsed
-                self.solve_stats["cut_separation_time_s"] += cut_sep_elapsed
-                self.solve_stats["rmp_runtime_error"] = str(exc)
-                self._iter_log.append(
-                    CGIterRecord(
-                        cg_iter=cg_iter,
-                        lp_obj=float("nan"),
-                        cols_generated=0,
-                        cols_added=0,
-                        rmp_time_s=round(rmp_lp_elapsed, 5),
-                        cut_separation_time_s=round(cut_sep_elapsed, 5),
-                        pricing_time_s=0.0,
-                        phase1_active=False,
-                        art_sum=0.0,
-                    )
-                )
-                self.status = NodeStatus.INFEASIBLE
-                self.is_solved = True
-                self.is_integral = False
-                return NodeSolveResult(
-                    node_id=self.node_id,
-                    status=NodeStatus.INFEASIBLE,
-                    lower_bound=float("inf"),
-                    is_integral=False,
-                )
-            self._capture_lp_basis()
+            lp_obj, dual_values = self.solve_rmp(allow_farkas=bool(config.use_farkas_pricing))
+            is_farkas = bool(dual_values.get("is_farkas", False))
+            if not is_farkas:
+                self._capture_lp_basis()
             rmp_elapsed = time.perf_counter() - t0
             cut_sep_elapsed = float(
                 dual_values.get("cut_separation_time_s", getattr(self, "_last_cut_separation_time_s", 0.0))
@@ -482,6 +451,58 @@ class InspectBnBNode(BnBNode):
             self.solve_stats["rmp_time_s"] += rmp_elapsed
             self.solve_stats["rmp_lp_time_s"] += rmp_lp_elapsed
             self.solve_stats["cut_separation_time_s"] += cut_sep_elapsed
+
+            if is_farkas:
+                self.solve_stats["farkas_rounds"] += 1
+                t1 = time.perf_counter()
+                pricing_result = self.solve_subproblem(dual_values, config)
+                pricing_elapsed = time.perf_counter() - t1
+                self.solve_stats["pricing_time_s"] += pricing_elapsed
+                meta = pricing_result.metadata if isinstance(pricing_result.metadata, dict) else {}
+                self.solve_stats["labels_generated"] += int(meta.get("labels_generated", 0))
+                self.solve_stats["labels_expanded"] += int(meta.get("labels_expanded", 0))
+                self.solve_stats["backtrack_pruned"] += int(meta.get("backtrack_pruned", 0))
+                self.solve_stats["shortcut_returns"] += int(meta.get("shortcut_returns", 0))
+                self.solve_stats["completion_bound_pruned"] += int(meta.get("completion_bound_pruned", 0))
+                self.solve_stats["existing_sig_filtered"] += int(meta.get("existing_sig_filtered", 0))
+                self.solve_stats["coeff_dominated_filtered"] += int(meta.get("coeff_dominated_filtered", 0))
+                cols_gen_this = int(meta.get("num_new_columns", len(pricing_result.new_columns)))
+                self.solve_stats["columns_generated"] += cols_gen_this
+                cols_added_this = 0
+                if pricing_result.new_columns:
+                    t2 = time.perf_counter()
+                    cols_added_this = self.add_columns_to_rmp(pricing_result.new_columns)
+                    self.solve_stats["addcol_time_s"] += time.perf_counter() - t2
+                    self.solve_stats["columns_added"] += int(cols_added_this)
+                    add_meta = getattr(self, "_last_addcol_stats", None)
+                    if isinstance(add_meta, dict):
+                        self.solve_stats["columns_attempted_add"] += int(add_meta.get("attempted", 0))
+                        self.solve_stats["columns_skipped_duplicate"] += int(add_meta.get("skipped_duplicate", 0))
+                        self.solve_stats["columns_skipped_dominated"] += int(add_meta.get("skipped_dominated", 0))
+                self._iter_log.append(
+                    CGIterRecord(
+                        cg_iter=cg_iter,
+                        lp_obj=float("nan"),
+                        cols_generated=int(cols_gen_this),
+                        cols_added=int(cols_added_this),
+                        rmp_time_s=round(rmp_lp_elapsed, 5),
+                        cut_separation_time_s=round(cut_sep_elapsed, 5),
+                        pricing_time_s=round(pricing_elapsed, 5),
+                        phase1_active=False,
+                        art_sum=0.0,
+                    )
+                )
+                if int(cols_added_this) > 0:
+                    continue
+                self.status = NodeStatus.INFEASIBLE
+                self.is_solved = True
+                self.is_integral = False
+                return NodeSolveResult(
+                    node_id=self.node_id,
+                    status=NodeStatus.INFEASIBLE,
+                    lower_bound=float("inf"),
+                    is_integral=False,
+                )
 
             phase1_active = self._artificial_sum() > 1e-8
             art_sum_now = self._artificial_sum()

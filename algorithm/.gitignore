@@ -23,3 +23,6 @@ venv/
 newest_test.json
 nocut_nols.jsonl
 data/generated/
+output/
+data/existing/custom/
+data/existing/yao/*-visualization.png

@@ -50,6 +50,9 @@ class BnBConfig:
     # limit columns added per pricing call to this value (0 = no cap).
     # Prevents column explosion caused by inflated duals (~1e5) during Phase-I.
     phase1_col_cap: int = 3
+    # Child RMP가 restricted column set에서 infeasible일 때 Farkas dual로
+    # feasibility-recovery pricing을 시도한다.
+    use_farkas_pricing: bool = True
 
 
 class DualStabilizer:
@@ -739,6 +742,7 @@ class BnBNode:
         self._restore_lp_basis_if_any()
         self.solve_stats = {
             "cg_iterations": 0,
+            "farkas_rounds": 0,
             "rmp_time_s": 0.0,
             "rmp_lp_time_s": 0.0,
             "cut_separation_time_s": 0.0,
@@ -784,8 +788,10 @@ class BnBNode:
                 break
             self.solve_stats["cg_iterations"] += 1
             t0 = time.perf_counter()
-            lp_obj, dual_values = self.solve_rmp()
-            self._capture_lp_basis()
+            lp_obj, dual_values = self.solve_rmp(allow_farkas=bool(config.use_farkas_pricing))
+            is_farkas = bool(dual_values.get("is_farkas", False))
+            if not is_farkas:
+                self._capture_lp_basis()
             rmp_elapsed_total = time.perf_counter() - t0
             cut_sep_elapsed = float(
                 dual_values.get(
@@ -800,6 +806,42 @@ class BnBNode:
             self.solve_stats["rmp_time_s"] += rmp_elapsed_total
             self.solve_stats["rmp_lp_time_s"] += rmp_lp_elapsed
             self.solve_stats["cut_separation_time_s"] += cut_sep_elapsed
+
+            if is_farkas:
+                self.solve_stats["farkas_rounds"] += 1
+                t1 = time.perf_counter()
+                pricing_result = self.solve_subproblem(dual_values, config)
+                self.solve_stats["pricing_time_s"] += time.perf_counter() - t1
+                meta = pricing_result.metadata if isinstance(pricing_result.metadata, dict) else {}
+                self.solve_stats["labels_generated"] += int(meta.get("labels_generated", 0))
+                self.solve_stats["labels_expanded"] += int(meta.get("labels_expanded", 0))
+                self.solve_stats["backtrack_pruned"] += int(meta.get("backtrack_pruned", 0))
+                self.solve_stats["shortcut_returns"] += int(meta.get("shortcut_returns", 0))
+                self.solve_stats["completion_bound_pruned"] += int(meta.get("completion_bound_pruned", 0))
+                self.solve_stats["existing_sig_filtered"] += int(meta.get("existing_sig_filtered", 0))
+                self.solve_stats["coeff_dominated_filtered"] += int(meta.get("coeff_dominated_filtered", 0))
+                self.solve_stats["columns_generated"] += int(meta.get("num_new_columns", len(pricing_result.new_columns)))
+                for _pk, _pv in meta.items():
+                    if isinstance(_pk, str) and _pk.startswith("pricing_prof_"):
+                        self.solve_stats[_pk] = self.solve_stats.get(_pk, 0.0) + float(_pv)
+                if pricing_result.new_columns:
+                    t2 = time.perf_counter()
+                    added_count = self.add_columns_to_rmp(pricing_result.new_columns)
+                    self.solve_stats["addcol_time_s"] += time.perf_counter() - t2
+                    self.solve_stats["columns_added"] += int(added_count)
+                    _accumulate_addcol_stats()
+                    if int(added_count) > 0:
+                        continue
+                    self.solve_stats["zero_add_iterations"] += 1
+                self.status = NodeStatus.INFEASIBLE
+                self.is_integral = False
+                self.is_solved = True
+                return NodeSolveResult(
+                    node_id=self.node_id,
+                    status=NodeStatus.INFEASIBLE,
+                    lower_bound=float("inf"),
+                    is_integral=False,
+                )
 
             # ── Phase-I 감지: 인공변수가 양수이면 Phase-I ─────────────────
             # GlobalRMP에서는 모델이 공유되므로 인공변수를 루트에서 제거하면
@@ -1233,7 +1275,47 @@ class BnBNode:
         model.update()
         self._branch_constraints_applied = True
 
-    def solve_rmp(self) -> Tuple[float, Dict[str, Any]]:
+    def _collect_farkas_duals(
+        self,
+        model: Any,
+        *,
+        status: int,
+        cut_separation_time_s: float,
+    ) -> Dict[str, Any]:
+        dual_values: Dict[str, Any] = {
+            "model_status": status,
+            "is_farkas": True,
+            "constr_pi_by_name": {},
+            "constr_pi_list": [],
+            "raw_farkas_dual_by_name": {},
+            "cut_separation_time_s": float(cut_separation_time_s),
+        }
+        for constr in model.getConstrs():
+            cname = constr.ConstrName
+            raw_val = float(getattr(constr, "FarkasDual", 0.0))
+            pricing_val = -raw_val
+            dual_values["raw_farkas_dual_by_name"][cname] = raw_val
+            dual_values["constr_pi_by_name"][cname] = pricing_val
+            dual_values["constr_pi_list"].append(
+                {"name": cname, "pi": pricing_val, "raw_farkas_dual": raw_val}
+            )
+        dual_values["pi_cover"] = {
+            name: val
+            for name, val in dual_values["constr_pi_by_name"].items()
+            if name.startswith("cover_")
+        }
+        dual_values["sigma_vehicle"] = {
+            name: val
+            for name, val in dual_values["constr_pi_by_name"].items()
+            if name.startswith("veh_")
+        }
+        try:
+            dual_values["farkas_proof"] = float(getattr(model, "FarkasProof", 0.0))
+        except Exception:
+            dual_values["farkas_proof"] = 0.0
+        return dual_values
+
+    def solve_rmp(self, *, allow_farkas: bool = False) -> Tuple[float, Dict[str, Any]]:
         """
         Solve LP relaxation of current node.
 
@@ -1245,6 +1327,7 @@ class BnBNode:
 
         model = self._get_gurobi_model()
         cut_separation_time_s = 0.0
+        self._last_farkas_duals = None
 
         # Optional node-level separation loop (cutting-plane style).
         rmp_obj = getattr(self, "rmp", None)
@@ -1263,6 +1346,8 @@ class BnBNode:
             if var.VType != GRB.CONTINUOUS:
                 var.VType = GRB.CONTINUOUS
         model.update()
+        model.Params.InfUnbdInfo = 1
+        model.Params.DualReductions = 0
 
         self.status = NodeStatus.PROCESSING
         model.optimize()
@@ -1303,7 +1388,24 @@ class BnBNode:
             dual_values["obj_value"] = lp_objective
             return lp_objective, dual_values
 
-        if status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
+        if status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD):
+            dual_values = self._collect_farkas_duals(
+                model,
+                status=status,
+                cut_separation_time_s=cut_separation_time_s,
+            )
+            self._last_farkas_duals = dual_values
+            self.status = NodeStatus.INFEASIBLE
+            self.lp_obj_value = None
+            self.lower_bound = float("inf")
+            if allow_farkas:
+                return float("inf"), dual_values
+            raise RuntimeError(
+                f"RMP solve failed at node {self.node_id}: model status {status} "
+                "(infeasible/unbounded)."
+            )
+
+        if status == GRB.UNBOUNDED:
             self.status = NodeStatus.INFEASIBLE
             self.lp_obj_value = None
             self.lower_bound = float("inf")
@@ -2353,14 +2455,20 @@ class BnBNode:
             "pricing_prof_py_dp_s": 0.0,
             "pricing_prof_python_label_s": 0.0,
         }
+        farkas_mode = bool(dual_values.get("is_farkas", False))
         pricing_data = self._get_pricing_data()
         pricing_method_raw = str(pricing_data.get("pricing_method", "labeling")).lower()
         cut_pricing_mode = normalize_cut_pricing_mode(pricing_data.get("cut_pricing_mode", "legacy"))
         cut_pricing_dual_tol = abs(float(pricing_data.get("cut_pricing_dual_tol", 1e-15)))
         use_coeff_dominance_filter = bool(pricing_data.get("use_coeff_dominance_filter", False))
+        if farkas_mode:
+            use_coeff_dominance_filter = False
         coeff_dom_obj_tol = abs(float(pricing_data.get("coeff_dom_obj_tol", 1e-9)))
         use_lex_vehicle_dual = pricing_method_raw == "cpp_dp_lex"
         pricing_method = "cpp_dp" if use_lex_vehicle_dual else pricing_method_raw
+        if farkas_mode:
+            pricing_method = "dp"
+            use_lex_vehicle_dual = False
         lex_dual_adjust = None
         if use_lex_vehicle_dual:
             from src.pricing.lex_vehicle_dual import adjust_vehicle_dual_with_lex
@@ -2803,7 +2911,10 @@ class BnBNode:
                     req_bit = int(req_bit_get(req_id, 0))
                     service_rc = float("inf")
                     if req_bit != 0 and req_id not in forbidden_edges:
-                        service_rc = travel + service_cost - float(edge_dual_get(req_id, 0.0))
+                        if farkas_mode:
+                            service_rc = -float(edge_dual_get(req_id, 0.0))
+                        else:
+                            service_rc = travel + service_cost - float(edge_dual_get(req_id, 0.0))
                     day_arcs2.append((nxt, travel, step_path, req_bit, demand, service_rc))
                 if day_arcs2:
                     day_required_out[cur_node_key] = tuple(day_arcs2)
@@ -2886,7 +2997,7 @@ class BnBNode:
                     _push_state(
                         mask,
                         nxt,
-                        cur_rc + travel,
+                        cur_rc + (0.0 if farkas_mode else travel),
                         cur_load,
                         key_cur,
                         step_path,
@@ -2896,7 +3007,7 @@ class BnBNode:
                     _push_state(
                         mask,
                         nxt,
-                        cur_rc + travel,
+                        cur_rc + (0.0 if farkas_mode else travel),
                         cur_load,
                         key_cur,
                         step_path,
@@ -2960,6 +3071,8 @@ class BnBNode:
             route_cut_const = float(cut_pricing_state.route_constant)
             base_route_rc = -vehicle_dual + route_cut_const
             cpp_vehicle_dual = vehicle_dual - route_cut_const
+            if farkas_mode:
+                discount_edge_duals = {}
             _prof["pricing_prof_dual_cut_s"] += time.perf_counter() - _tdc
             forbidden_edges, forced_edges = self._branch_rules_for_day(day_ctx)
             sched_forbidden_map = pricing_data.get("forbidden_required_edges_by_day", {})
@@ -3291,11 +3404,10 @@ class BnBNode:
                                 continue
                             new_mask = mask | req_bit
                             d_rb = cut_pricing_state.rb_delta(mask, new_mask, day_bit_to_req)
+                            travel_part = 0.0 if farkas_mode else (dead_cost + svc_travel + service_cost)
                             new_rc = (
                                 cur_rc
-                                + dead_cost
-                                + svc_travel
-                                + service_cost
+                                + travel_part
                                 - edge_duals.get(req_id, 0.0)
                                 - _disc_seg(cur_node, svc_from)
                                 + d_rb
@@ -3329,7 +3441,7 @@ class BnBNode:
                     back_cost = sp_cost.get(node, {}).get(depot, float("inf"))
                     if not math.isfinite(back_cost):
                         continue
-                    total_rc = rc_val + back_cost - _disc_seg(node, depot)
+                    total_rc = rc_val + (0.0 if farkas_mode else back_cost) - _disc_seg(node, depot)
                     if total_rc < -config.eps_reduced_cost:
                         terminal_candidates.append((total_rc, mask, node, sp_path.get(node, {}).get(depot, tuple())))
                 terminal_candidates.sort(key=lambda x: x[0])
