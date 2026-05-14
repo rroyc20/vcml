@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from itertools import combinations
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import gurobipy as gp
 from gurobipy import GRB
@@ -12,13 +11,6 @@ Edge = Tuple[int, int]
 
 def _canon_edge(i: int, j: int) -> Edge:
     return (i, j) if i < j else (j, i)
-
-
-def _all_nonempty_subsets(nodes: Sequence[int], depot: int) -> Iterable[Tuple[int, ...]]:
-    candidates = [i for i in nodes if i != depot]
-    for r in range(1, len(candidates) + 1):
-        for comb in combinations(candidates, r):
-            yield comb
 
 
 def _delta(edges: Sequence[Edge], subset: Sequence[int]) -> List[Edge]:
@@ -74,31 +66,88 @@ def build_tiny_instance() -> Dict[str, Any]:
     }
 
 
-def _add_cutset_connectivity(
-    m: gp.Model,
-    V: Sequence[int],
-    depot: int,
-    T: Sequence[int],
-    K: Sequence[int],
-    E: Sequence[Edge],
-    ER: Sequence[Edge],
-    x: gp.tupledict,
-    y: gp.tupledict,
-) -> None:
-    """Legacy cutset-based connectivity constraints."""
-    for t in T:
-        for k in K:
-            for S in _all_nonempty_subsets(V, depot):
-                delta_all = _delta(E, S)
-                delta_req = [e for e in delta_all if e in ER]
-                req_inside = _inside(ER, S)
+def _support_components(
+    nodes: Sequence[int],
+    active_edges: Sequence[Edge],
+) -> List[set[int]]:
+    adj: Dict[int, List[int]] = {int(i): [] for i in nodes}
+    for u, v in active_edges:
+        adj.setdefault(int(u), []).append(int(v))
+        adj.setdefault(int(v), []).append(int(u))
+
+    seen: set[int] = set()
+    comps: List[set[int]] = []
+    for start in nodes:
+        if start in seen or not adj.get(int(start)):
+            continue
+        stack = [int(start)]
+        comp: set[int] = set()
+        seen.add(int(start))
+        while stack:
+            cur = stack.pop()
+            comp.add(cur)
+            for nxt in adj.get(cur, []):
+                if nxt in seen:
+                    continue
+                seen.add(nxt)
+                stack.append(nxt)
+        comps.append(comp)
+    return comps
+
+
+def _separate_lazy_cutsets(model: gp.Model) -> None:
+    x_vals = model.cbGetSolution(model._lazy_x)
+    y_vals = model.cbGetSolution(model._lazy_y)
+
+    for t in model._lazy_T:
+        for k in model._lazy_K:
+            active_edges: List[Edge] = []
+            serviced_required_inside: List[Edge] = []
+
+            for ei, edge in model._lazy_idx_to_edge.items():
+                x_used = False
+                if ei in model._lazy_required_idx_set:
+                    x_used = x_vals[ei, t, k] > 0.5
+                    if x_used:
+                        serviced_required_inside.append(edge)
+                if x_used or y_vals[ei, t, k] > 0.5:
+                    active_edges.append(edge)
+
+            if not active_edges:
+                continue
+
+            for comp in _support_components(model._lazy_V, active_edges):
+                if model._lazy_depot in comp:
+                    continue
+
+                req_inside = [e for e in serviced_required_inside if e[0] in comp and e[1] in comp]
                 if not req_inside:
                     continue
-                lhs = gp.quicksum(x[E.index(e), t, k] for e in delta_req) + gp.quicksum(
-                    y[E.index(e), t, k] for e in delta_all
+
+                delta_all = _delta(model._lazy_E, list(comp))
+                delta_req = [e for e in delta_all if e in model._lazy_er_set]
+                if not delta_all:
+                    witness = req_inside[0]
+                    witness_idx = model._lazy_edge_to_idx[witness]
+                    model.cbLazy(model._lazy_x[witness_idx, t, k] <= 0.0)
+                    model._lazy_cuts_added += 1
+                    continue
+
+                lhs = gp.quicksum(
+                    model._lazy_x[model._lazy_edge_to_idx[e], t, k] for e in delta_req
+                ) + gp.quicksum(
+                    model._lazy_y[model._lazy_edge_to_idx[e], t, k] for e in delta_all
                 )
-                for f in req_inside:
-                    m.addConstr(lhs >= 2.0 * x[E.index(f), t, k], name=f"conn_t{t}_k{k}_S{S}_f{f}")
+                witness = req_inside[0]
+                witness_idx = model._lazy_edge_to_idx[witness]
+                model.cbLazy(lhs >= 2.0 * model._lazy_x[witness_idx, t, k])
+                model._lazy_cuts_added += 1
+
+
+def _lazy_cutset_callback(model: gp.Model, where: int) -> None:
+    if where != GRB.Callback.MIPSOL:
+        return
+    _separate_lazy_cutsets(model)
 
 
 def solve_arc_based_pcarp(
@@ -106,14 +155,23 @@ def solve_arc_based_pcarp(
     time_limit: float | None = None,
     require_optimal: bool = False,
     mip_gap: float = 0.0,
+    connectivity_model: str = "cutset",
 ) -> Dict[str, Any]:
+    connectivity_model = str(connectivity_model).lower()
+    if connectivity_model in {"lazy", "lazy_cutset"}:
+        connectivity_model = "cutset"
+    if connectivity_model not in {"cutset", "flow"}:
+        raise ValueError(f"Unknown arc connectivity model: {connectivity_model!r}")
+
     V = instance["nodes"]
     depot = instance["depot"]
     T = instance["periods"]
     K = instance["vehicles"]
-    E = instance["edges"]
+    # Prefer the original sparse road graph when provided. The metric closure is
+    # useful for pricing-based methods, but it makes the arc MIP artificially dense.
+    E = list(instance.get("arc_sparse_edges") or instance["edges"])
     ER = instance["required_edges"]
-    r = instance["travel_cost"]
+    r = dict(instance.get("arc_sparse_travel_cost") or instance["travel_cost"])
     c = instance["service_cost"]
     q = instance["demand"]
     Q = float(instance["capacity"])
@@ -121,20 +179,25 @@ def solve_arc_based_pcarp(
     theta = float(instance.get("discount_theta", 0.0))
 
     e_idx = list(range(len(E)))
-    er_idx = [E.index(e) for e in ER]
+    edge_to_idx = {e: idx for idx, e in enumerate(E)}
+    missing_required = [e for e in ER if e not in edge_to_idx]
+    if missing_required:
+        raise ValueError(
+            "Arc graph is missing required edge(s): "
+            + ", ".join(str(e) for e in missing_required[:5])
+        )
+    er_idx = [edge_to_idx[e] for e in ER]
     idx_to_edge = {i: E[i] for i in e_idx}
     er_set = set(ER)
-    sparse_edge_set = set(instance.get("arc_sparse_edges", []))
-    if sparse_edge_set:
-        nonreq_idx = [ei for ei in e_idx if idx_to_edge[ei] not in er_set and idx_to_edge[ei] in sparse_edge_set]
-    else:
-        nonreq_idx = [ei for ei in e_idx if idx_to_edge[ei] not in er_set]
+    nonreq_idx = [ei for ei in e_idx if idx_to_edge[ei] not in er_set]
 
     m = gp.Model("pcarp_arc_based_check")
     m.Params.OutputFlag = int(instance.get("arc_gurobi_output", instance.get("gurobi_output", 0)))
     if time_limit is not None and time_limit > 0:
         m.Params.TimeLimit = float(time_limit)
     m.Params.MIPGap = float(mip_gap)
+    if connectivity_model == "cutset":
+        m.Params.LazyConstraints = 1
 
     x = m.addVars(er_idx, T, K, vtype=GRB.BINARY, name="x")
     y = m.addVars(e_idx, T, K, vtype=GRB.INTEGER, lb=0, ub=2 * len(E), name="y")
@@ -167,7 +230,7 @@ def solve_arc_based_pcarp(
 
     # daily service induced by chosen schedule for each vehicle
     for e in ER:
-        ei = E.index(e)
+        ei = edge_to_idx[e]
         for t in T:
             for k in K:
                 rhs = gp.quicksum(s[e, p_idx, k] for p_idx, pat in enumerate(P[e]) if t in pat)
@@ -179,8 +242,8 @@ def solve_arc_based_pcarp(
             for i in V:
                 delta_i = _delta(E, [i])
                 delta_req_i = [e for e in delta_i if e in ER]
-                lhs = gp.quicksum(x[E.index(e), t, k] for e in delta_req_i) + gp.quicksum(
-                    y[E.index(e), t, k] for e in delta_i
+                lhs = gp.quicksum(x[edge_to_idx[e], t, k] for e in delta_req_i) + gp.quicksum(
+                    y[edge_to_idx[e], t, k] for e in delta_i
                 )
                 m.addConstr(lhs == 2.0 * w[i, t, k], name=f"deg_i{i}_t{t}_k{k}")
 
@@ -209,10 +272,79 @@ def solve_arc_based_pcarp(
             for e in er_idx:
                 m.addConstr(x[e, t, k] <= w[depot, t, k], name=f"depot_use_e{e}_t{t}_k{k}")
 
-    # connectivity: cutset only
-    _add_cutset_connectivity(m=m, V=V, depot=depot, T=T, K=K, E=E, ER=ER, x=x, y=y)
+    if connectivity_model == "flow":
+        # Single-commodity flow from the depot to serviced required-edge endpoints.
+        # This replaces lazy cutset separation with explicit connectivity constraints.
+        directed_arcs: List[Tuple[int, int]] = []
+        directed_arc_to_edge_idx: Dict[Tuple[int, int], int] = {}
+        incoming: Dict[int, List[Tuple[int, int]]] = {int(i): [] for i in V}
+        outgoing: Dict[int, List[Tuple[int, int]]] = {int(i): [] for i in V}
+        for ei, (u, v) in enumerate(E):
+            directed_arcs.append((u, v))
+            directed_arcs.append((v, u))
+            directed_arc_to_edge_idx[u, v] = ei
+            directed_arc_to_edge_idx[v, u] = ei
+            outgoing[int(u)].append((u, v))
+            incoming[int(v)].append((u, v))
+            outgoing[int(v)].append((v, u))
+            incoming[int(u)].append((v, u))
 
-    m.optimize()
+        flow_M = float(max(1, len(ER)))
+        f = m.addVars(directed_arcs, T, K, vtype=GRB.CONTINUOUS, lb=0.0, ub=flow_M, name="f")
+        required_idx_set = set(er_idx)
+        required_incident_by_node = {
+            int(i): [edge_to_idx[e] for e in _delta(ER, [i])] for i in V
+        }
+
+        for t in T:
+            for k in K:
+                for u, v in directed_arcs:
+                    ei = directed_arc_to_edge_idx[u, v]
+                    edge_use = y[ei, t, k]
+                    if ei in required_idx_set:
+                        edge_use = edge_use + x[ei, t, k]
+                    m.addConstr(
+                        f[u, v, t, k] <= flow_M * edge_use,
+                        name=f"flow_link_{u}_{v}_t{t}_k{k}",
+                    )
+
+                nondepot_demand = gp.quicksum(
+                    0.5 * x[ei, t, k]
+                    for i in V
+                    if int(i) != int(depot)
+                    for ei in required_incident_by_node[int(i)]
+                )
+                for i in V:
+                    i_int = int(i)
+                    net_in = gp.quicksum(f[u, v, t, k] for u, v in incoming[i_int]) - gp.quicksum(
+                        f[u, v, t, k] for u, v in outgoing[i_int]
+                    )
+                    if i_int == int(depot):
+                        m.addConstr(net_in == -nondepot_demand, name=f"flow_src_t{t}_k{k}")
+                    else:
+                        node_demand = gp.quicksum(
+                            0.5 * x[ei, t, k] for ei in required_incident_by_node[i_int]
+                        )
+                        m.addConstr(net_in == node_demand, name=f"flow_bal_i{i}_t{t}_k{k}")
+
+        m._lazy_cuts_added = 0
+        m.optimize()
+    else:
+        # connectivity: cutset separation via lazy constraints
+        m._lazy_V = list(V)
+        m._lazy_depot = int(depot)
+        m._lazy_T = list(T)
+        m._lazy_K = list(K)
+        m._lazy_E = list(E)
+        m._lazy_er_set = set(ER)
+        m._lazy_edge_to_idx = dict(edge_to_idx)
+        m._lazy_idx_to_edge = dict(idx_to_edge)
+        m._lazy_required_idx_set = set(er_idx)
+        m._lazy_x = x
+        m._lazy_y = y
+        m._lazy_cuts_added = 0
+
+        m.optimize(_lazy_cutset_callback)
 
     if require_optimal and m.Status != GRB.OPTIMAL:
         raise RuntimeError(f"Arc-based check model did not reach OPTIMAL (status={m.Status})")
@@ -229,6 +361,21 @@ def solve_arc_based_pcarp(
     elif m.Status == GRB.OPTIMAL and has_solution:
         gap_pct = 0.0
 
+    if not has_solution:
+        return {
+            "status": int(m.Status),
+            "objective": obj_val,
+            "best_bound": obj_bound,
+            "gap_pct": gap_pct,
+            "connectivity_model": "lazy_cutset" if connectivity_model == "cutset" else "flow",
+            "lazy_cuts_added": int(getattr(m, "_lazy_cuts_added", 0)),
+            "chosen_schedules": {},
+            "chosen_vehicle_by_edge": {},
+            "serviced": {},
+            "deadhead": {},
+            "discount_active": {},
+        }
+
     chosen_schedules: Dict[Edge, int] = {}
     chosen_vehicle_by_edge: Dict[Edge, int] = {}
     serviced: Dict[Tuple[Edge, int, int], int] = {}
@@ -243,7 +390,7 @@ def solve_arc_based_pcarp(
                     chosen_vehicle_by_edge[e] = k
 
     for e in ER:
-        ei = E.index(e)
+        ei = edge_to_idx[e]
         for t in T:
             for k in K:
                 if x[ei, t, k].X > 0.5:
@@ -268,7 +415,8 @@ def solve_arc_based_pcarp(
         "objective": obj_val,
         "best_bound": obj_bound,
         "gap_pct": gap_pct,
-        "connectivity_model": "cutset",
+        "connectivity_model": "lazy_cutset" if connectivity_model == "cutset" else "flow",
+        "lazy_cuts_added": int(getattr(m, "_lazy_cuts_added", 0)),
         "chosen_schedules": chosen_schedules,
         "chosen_vehicle_by_edge": chosen_vehicle_by_edge,
         "serviced": serviced,
@@ -279,6 +427,31 @@ def solve_arc_based_pcarp(
 
 def solve_arc_based_pcarp_optimal(instance: Dict[str, Any]) -> Dict[str, Any]:
     return solve_arc_based_pcarp(
+        instance=instance,
+        time_limit=None,
+        require_optimal=True,
+        mip_gap=0.0,
+        connectivity_model="cutset",
+    )
+
+
+def solve_arc_based_pcarp_flow(
+    instance: Dict[str, Any],
+    time_limit: float | None = None,
+    require_optimal: bool = False,
+    mip_gap: float = 0.0,
+) -> Dict[str, Any]:
+    return solve_arc_based_pcarp(
+        instance=instance,
+        time_limit=time_limit,
+        require_optimal=require_optimal,
+        mip_gap=mip_gap,
+        connectivity_model="flow",
+    )
+
+
+def solve_arc_based_pcarp_flow_optimal(instance: Dict[str, Any]) -> Dict[str, Any]:
+    return solve_arc_based_pcarp_flow(
         instance=instance,
         time_limit=None,
         require_optimal=True,

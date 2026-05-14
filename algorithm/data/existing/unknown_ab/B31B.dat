@@ -1,0 +1,64 @@
+ NOMBRE : B31B
+ COMENTARIO : Imported from rafaelmartinelli/CARPData.jl (unknown_ab); original bounds lb=693 ub=860
+ VERTICES : 31
+ ARISTAS_REQ : 42
+ ARISTAS_NOREQ : 10
+ VEHICULOS : 100
+ CAPACIDAD : 25
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 274
+ LISTA_ARISTAS_REQ :
+ ( 2, 3)   coste 3   demanda 4
+ ( 3, 9)   coste 12   demanda 22
+ ( 3, 5)   coste 4   demanda 9
+ ( 3, 4)   coste 6   demanda 17
+ ( 9, 10)   coste 5   demanda 15
+ ( 5, 8)   coste 51   demanda 13
+ ( 8, 12)   coste 5   demanda 16
+ ( 4, 6)   coste 5   demanda 16
+ ( 4, 7)   coste 6   demanda 5
+ ( 6, 7)   coste 5   demanda 20
+ ( 7, 14)   coste 7   demanda 25
+ ( 12, 13)   coste 6   demanda 11
+ ( 10, 11)   coste 6   demanda 5
+ ( 10, 26)   coste 7   demanda 6
+ ( 25, 27)   coste 4   demanda 9
+ ( 11, 25)   coste 6   demanda 10
+ ( 24, 25)   coste 3   demanda 4
+ ( 23, 26)   coste 6   demanda 18
+ ( 23, 24)   coste 5   demanda 10
+ ( 22, 24)   coste 4   demanda 7
+ ( 22, 23)   coste 6   demanda 6
+ ( 1, 22)   coste 5   demanda 10
+ ( 13, 14)   coste 6   demanda 5
+ ( 14, 15)   coste 2   demanda 4
+ ( 15, 17)   coste 5   demanda 15
+ ( 1, 17)   coste 6   demanda 5
+ ( 17, 21)   coste 4   demanda 7
+ ( 18, 21)   coste 4   demanda 4
+ ( 21, 22)   coste 5   demanda 17
+ ( 16, 18)   coste 4   demanda 3
+ ( 16, 19)   coste 11   demanda 20
+ ( 18, 20)   coste 4   demanda 3
+ ( 19, 20)   coste 6   demanda 16
+ ( 19, 23)   coste 10   demanda 19
+ ( 20, 22)   coste 6   demanda 15
+ ( 9, 29)   coste 4   demanda 4
+ ( 10, 29)   coste 3   demanda 6
+ ( 10, 28)   coste 3   demanda 3
+ ( 28, 29)   coste 5   demanda 8
+ ( 7, 31)   coste 6   demanda 20
+ ( 14, 31)   coste 5   demanda 10
+ ( 30, 31)   coste 8   demanda 23
+ LISTA_ARISTAS_NOREQ :
+ ( 5, 6)   coste 3
+ ( 12, 11)   coste 5
+ ( 10, 27)   coste 3
+ ( 26, 27)   coste 5
+ ( 1, 11)   coste 8
+ ( 1, 13)   coste 6
+ ( 1, 21)   coste 3
+ ( 17, 18)   coste 3
+ ( 15, 30)   coste 4
+ ( 16, 30)   coste 3
+ DEPOSITO :   1

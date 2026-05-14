@@ -1,0 +1,87 @@
+ NOMBRE : new-yao-westjordan-M
+ COMENTARIO : Photo-digitized proxy from Yao et al. (2021) West Jordan panel
+ VERTICES : 65
+ ARISTAS_REQ : 23
+ ARISTAS_NOREQ : 52
+ VEHICULOS : 4
+ CAPACIDAD : 300
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 1349
+ LISTA_ARISTAS_REQ :
+ ( 4, 25)   coste 58   demanda 49
+ ( 25, 13)   coste 58   demanda 57
+ ( 13, 26)   coste 48   demanda 55
+ ( 26, 12)   coste 48   demanda 53
+ ( 12, 27)   coste 57   demanda 51
+ ( 27, 3)   coste 57   demanda 51
+ ( 3, 9)   coste 63   demanda 51
+ ( 2, 8)   coste 65   demanda 50
+ ( 5, 28)   coste 54   demanda 50
+ ( 28, 10)   coste 54   demanda 50
+ ( 12, 29)   coste 36   demanda 48
+ ( 29, 15)   coste 36   demanda 50
+ ( 15, 17)   coste 70   demanda 49
+ ( 17, 30)   coste 42   demanda 51
+ ( 30, 20)   coste 42   demanda 47
+ ( 20, 31)   coste 66   demanda 52
+ ( 31, 32)   coste 66   demanda 53
+ ( 32, 23)   coste 66   demanda 53
+ ( 17, 33)   coste 73   demanda 48
+ ( 33, 34)   coste 73   demanda 51
+ ( 34, 21)   coste 73   demanda 51
+ ( 11, 35)   coste 72   demanda 51
+ ( 35, 12)   coste 72   demanda 47
+ LISTA_ARISTAS_NOREQ :
+ ( 1, 36)   coste 36
+ ( 36, 2)   coste 36
+ ( 2, 37)   coste 36
+ ( 37, 3)   coste 36
+ ( 3, 38)   coste 39
+ ( 38, 4)   coste 39
+ ( 4, 39)   coste 42
+ ( 39, 5)   coste 42
+ ( 5, 40)   coste 45
+ ( 40, 6)   coste 45
+ ( 6, 41)   coste 42
+ ( 41, 7)   coste 42
+ ( 11, 42)   coste 48
+ ( 42, 43)   coste 48
+ ( 43, 12)   coste 48
+ ( 12, 44)   coste 48
+ ( 44, 13)   coste 48
+ ( 13, 45)   coste 44
+ ( 45, 46)   coste 44
+ ( 46, 14)   coste 44
+ ( 18, 47)   coste 48
+ ( 47, 19)   coste 48
+ ( 19, 48)   coste 42
+ ( 48, 20)   coste 42
+ ( 20, 49)   coste 64
+ ( 49, 50)   coste 64
+ ( 50, 21)   coste 64
+ ( 6, 51)   coste 58
+ ( 51, 14)   coste 58
+ ( 14, 52)   coste 54
+ ( 52, 53)   coste 54
+ ( 53, 54)   coste 54
+ ( 54, 21)   coste 54
+ ( 21, 55)   coste 52
+ ( 55, 22)   coste 52
+ ( 1, 56)   coste 57
+ ( 56, 11)   coste 57
+ ( 11, 57)   coste 56
+ ( 57, 58)   coste 56
+ ( 58, 59)   coste 56
+ ( 59, 18)   coste 56
+ ( 18, 60)   coste 42
+ ( 60, 23)   coste 42
+ ( 23, 61)   coste 38
+ ( 61, 24)   coste 38
+ ( 4, 62)   coste 58
+ ( 62, 13)   coste 58
+ ( 13, 63)   coste 42
+ ( 63, 16)   coste 42
+ ( 16, 64)   coste 50
+ ( 64, 65)   coste 50
+ ( 65, 20)   coste 50
+ DEPOSITO :   19

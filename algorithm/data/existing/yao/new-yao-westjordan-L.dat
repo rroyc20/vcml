@@ -1,0 +1,167 @@
+ NOMBRE : new-yao-westjordan-L
+ COMENTARIO : Photo-digitized proxy from Yao et al. (2021) West Jordan panel
+ VERTICES : 127
+ ARISTAS_REQ : 45
+ ARISTAS_NOREQ : 110
+ VEHICULOS : 7
+ CAPACIDAD : 300
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 2376
+ LISTA_ARISTAS_REQ :
+ ( 7, 40)   coste 40   demanda 56
+ ( 40, 14)   coste 40   demanda 51
+ ( 14, 41)   coste 50   demanda 49
+ ( 41, 13)   coste 50   demanda 50
+ ( 13, 42)   coste 41   demanda 56
+ ( 42, 5)   coste 41   demanda 55
+ ( 5, 35)   coste 64   demanda 51
+ ( 5, 43)   coste 50   demanda 49
+ ( 43, 12)   coste 50   demanda 52
+ ( 12, 44)   coste 51   demanda 55
+ ( 44, 16)   coste 51   demanda 52
+ ( 3, 45)   coste 41   demanda 46
+ ( 45, 11)   coste 41   demanda 51
+ ( 11, 46)   coste 42   demanda 48
+ ( 46, 37)   coste 42   demanda 44
+ ( 34, 4)   coste 40   demanda 53
+ ( 4, 12)   coste 80   demanda 44
+ ( 33, 2)   coste 50   demanda 51
+ ( 36, 8)   coste 45   demanda 47
+ ( 16, 38)   coste 76   demanda 54
+ ( 38, 39)   coste 60   demanda 48
+ ( 39, 47)   coste 50   demanda 53
+ ( 47, 21)   coste 50   demanda 43
+ ( 31, 21)   coste 76   demanda 47
+ ( 21, 30)   coste 63   demanda 50
+ ( 32, 48)   coste 40   demanda 51
+ ( 48, 22)   coste 40   demanda 54
+ ( 22, 49)   coste 50   demanda 51
+ ( 49, 21)   coste 50   demanda 50
+ ( 18, 50)   coste 60   demanda 54
+ ( 50, 29)   coste 60   demanda 50
+ ( 29, 51)   coste 43   demanda 49
+ ( 51, 27)   coste 43   demanda 45
+ ( 17, 52)   coste 51   demanda 52
+ ( 52, 20)   coste 51   demanda 52
+ ( 20, 53)   coste 52   demanda 50
+ ( 53, 27)   coste 52   demanda 53
+ ( 10, 54)   coste 79   demanda 47
+ ( 54, 17)   coste 79   demanda 55
+ ( 17, 55)   coste 51   demanda 53
+ ( 55, 20)   coste 51   demanda 57
+ ( 23, 56)   coste 64   demanda 50
+ ( 56, 26)   coste 64   demanda 47
+ ( 24, 57)   coste 56   demanda 53
+ ( 57, 25)   coste 56   demanda 45
+ LISTA_ARISTAS_NOREQ :
+ ( 1, 58)   coste 30
+ ( 58, 2)   coste 30
+ ( 2, 59)   coste 30
+ ( 59, 3)   coste 30
+ ( 3, 60)   coste 30
+ ( 60, 4)   coste 30
+ ( 4, 61)   coste 30
+ ( 61, 5)   coste 30
+ ( 5, 62)   coste 30
+ ( 62, 6)   coste 30
+ ( 6, 63)   coste 30
+ ( 63, 7)   coste 30
+ ( 7, 64)   coste 30
+ ( 64, 8)   coste 30
+ ( 8, 65)   coste 30
+ ( 65, 9)   coste 30
+ ( 10, 66)   coste 33
+ ( 66, 67)   coste 33
+ ( 67, 11)   coste 33
+ ( 11, 68)   coste 40
+ ( 68, 12)   coste 40
+ ( 12, 69)   coste 40
+ ( 69, 13)   coste 40
+ ( 13, 70)   coste 33
+ ( 70, 71)   coste 33
+ ( 71, 14)   coste 33
+ ( 14, 72)   coste 33
+ ( 72, 73)   coste 33
+ ( 73, 15)   coste 33
+ ( 19, 74)   coste 30
+ ( 74, 75)   coste 30
+ ( 75, 20)   coste 30
+ ( 20, 76)   coste 37
+ ( 76, 77)   coste 37
+ ( 77, 21)   coste 37
+ ( 21, 78)   coste 33
+ ( 78, 79)   coste 33
+ ( 79, 22)   coste 33
+ ( 22, 80)   coste 35
+ ( 80, 23)   coste 35
+ ( 23, 81)   coste 30
+ ( 81, 82)   coste 30
+ ( 82, 24)   coste 30
+ ( 8, 83)   coste 30
+ ( 83, 84)   coste 30
+ ( 84, 15)   coste 30
+ ( 15, 85)   coste 44
+ ( 85, 86)   coste 44
+ ( 86, 87)   coste 44
+ ( 87, 88)   coste 44
+ ( 88, 24)   coste 44
+ ( 24, 89)   coste 37
+ ( 89, 90)   coste 37
+ ( 90, 25)   coste 37
+ ( 6, 91)   coste 33
+ ( 91, 92)   coste 33
+ ( 92, 14)   coste 33
+ ( 14, 93)   coste 46
+ ( 93, 94)   coste 46
+ ( 94, 95)   coste 46
+ ( 95, 96)   coste 46
+ ( 96, 23)   coste 46
+ ( 23, 97)   coste 43
+ ( 97, 98)   coste 43
+ ( 98, 26)   coste 43
+ ( 4, 99)   coste 40
+ ( 99, 12)   coste 40
+ ( 12, 100)   coste 29
+ ( 100, 101)   coste 29
+ ( 101, 38)   coste 29
+ ( 38, 102)   coste 40
+ ( 102, 103)   coste 40
+ ( 103, 104)   coste 40
+ ( 104, 21)   coste 40
+ ( 2, 105)   coste 30
+ ( 105, 106)   coste 30
+ ( 106, 11)   coste 30
+ ( 11, 107)   coste 43
+ ( 107, 108)   coste 43
+ ( 108, 17)   coste 43
+ ( 17, 109)   coste 34
+ ( 109, 110)   coste 34
+ ( 110, 20)   coste 34
+ ( 20, 111)   coste 35
+ ( 111, 112)   coste 35
+ ( 112, 27)   coste 35
+ ( 1, 113)   coste 40
+ ( 113, 10)   coste 40
+ ( 10, 114)   coste 46
+ ( 114, 115)   coste 46
+ ( 115, 116)   coste 46
+ ( 116, 117)   coste 46
+ ( 117, 19)   coste 46
+ ( 19, 118)   coste 34
+ ( 118, 28)   coste 34
+ ( 16, 119)   coste 36
+ ( 119, 120)   coste 36
+ ( 120, 31)   coste 36
+ ( 31, 121)   coste 33
+ ( 121, 122)   coste 33
+ ( 122, 22)   coste 33
+ ( 11, 123)   coste 39
+ ( 123, 124)   coste 39
+ ( 124, 16)   coste 39
+ ( 16, 125)   coste 38
+ ( 125, 39)   coste 38
+ ( 28, 126)   coste 40
+ ( 126, 29)   coste 40
+ ( 29, 127)   coste 43
+ ( 127, 27)   coste 43
+ DEPOSITO :   22

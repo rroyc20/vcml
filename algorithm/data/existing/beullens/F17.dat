@@ -1,0 +1,62 @@
+ NOMBRE : F17
+ COMENTARIO : Imported from rafaelmartinelli/CARPData.jl (beullens); original bounds lb=2055 ub=2055
+ VERTICES : 38
+ ARISTAS_REQ : 36
+ ARISTAS_NOREQ : 14
+ VEHICULOS : 100
+ CAPACIDAD : 600
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 1450
+ LISTA_ARISTAS_REQ :
+ ( 2, 4)   coste 40   demanda 40
+ ( 3, 29)   coste 40   demanda 40
+ ( 4, 22)   coste 110   demanda 110
+ ( 4, 29)   coste 20   demanda 20
+ ( 5, 18)   coste 130   demanda 130
+ ( 6, 38)   coste 80   demanda 80
+ ( 14, 30)   coste 55   demanda 55
+ ( 15, 16)   coste 35   demanda 35
+ ( 16, 37)   coste 80   demanda 80
+ ( 16, 17)   coste 50   demanda 50
+ ( 17, 36)   coste 15   demanda 15
+ ( 17, 20)   coste 10   demanda 10
+ ( 18, 35)   coste 10   demanda 10
+ ( 18, 19)   coste 10   demanda 10
+ ( 19, 21)   coste 25   demanda 25
+ ( 19, 20)   coste 10   demanda 10
+ ( 20, 23)   coste 25   demanda 25
+ ( 21, 22)   coste 20   demanda 20
+ ( 21, 23)   coste 15   demanda 15
+ ( 23, 24)   coste 145   demanda 145
+ ( 24, 29)   coste 65   demanda 65
+ ( 24, 27)   coste 15   demanda 15
+ ( 24, 25)   coste 15   demanda 15
+ ( 25, 27)   coste 15   demanda 15
+ ( 25, 26)   coste 25   demanda 25
+ ( 27, 28)   coste 30   demanda 30
+ ( 30, 37)   coste 85   demanda 85
+ ( 31, 32)   coste 10   demanda 10
+ ( 31, 36)   coste 15   demanda 15
+ ( 32, 35)   coste 20   demanda 20
+ ( 33, 38)   coste 50   demanda 50
+ ( 33, 34)   coste 60   demanda 60
+ ( 34, 38)   coste 30   demanda 30
+ ( 1, 34)   coste 45   demanda 45
+ ( 1, 35)   coste 25   demanda 25
+ ( 36, 37)   coste 20   demanda 20
+ LISTA_ARISTAS_NOREQ :
+ ( 2, 9)   coste 45
+ ( 2, 10)   coste 45
+ ( 3, 9)   coste 40
+ ( 3, 7)   coste 5
+ ( 4, 5)   coste 80
+ ( 5, 6)   coste 50
+ ( 5, 10)   coste 40
+ ( 7, 8)   coste 20
+ ( 8, 13)   coste 30
+ ( 11, 14)   coste 85
+ ( 11, 12)   coste 50
+ ( 12, 15)   coste 15
+ ( 12, 26)   coste 165
+ ( 13, 28)   coste 25
+ DEPOSITO :   1

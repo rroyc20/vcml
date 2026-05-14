@@ -87,6 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-shared-edges-between-sri3", type=int, default=1)
     parser.add_argument("--cut-root-only", type=int, choices=[0, 1], default=0, help="Run separation only at root node.")
     parser.add_argument("--cut-separation-max-depth", type=int, default=None)
+    parser.add_argument("--use-transformed-pricing-graph", type=int, choices=[0, 1], default=1,
+                        help="1=use graph-transformed pricing (default); 0=disable.")
     return parser
 
 
@@ -148,6 +150,7 @@ def main() -> None:
         max_shared_edges_between_sri3=int(args.max_shared_edges_between_sri3),
         cut_root_only=int(args.cut_root_only),
         cut_separation_max_depth=args.cut_separation_max_depth,
+        use_transformed_pricing_graph=int(args.use_transformed_pricing_graph),
     )
     rows = run_existing_batch(config)
     print_compare_report(rows)

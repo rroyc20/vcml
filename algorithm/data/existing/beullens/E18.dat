@@ -1,0 +1,122 @@
+ NOMBRE : E18
+ COMENTARIO : Imported from rafaelmartinelli/CARPData.jl (beullens); original bounds lb=3835 ub=3835
+ VERTICES : 78
+ ARISTAS_REQ : 88
+ ARISTAS_NOREQ : 22
+ VEHICULOS : 100
+ CAPACIDAD : 300
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 2225
+ LISTA_ARISTAS_REQ :
+ ( 2, 4)   coste 40   demanda 40
+ ( 2, 78)   coste 60   demanda 60
+ ( 2, 61)   coste 25   demanda 25
+ ( 3, 4)   coste 10   demanda 10
+ ( 4, 5)   coste 5   demanda 5
+ ( 5, 7)   coste 5   demanda 5
+ ( 5, 65)   coste 5   demanda 5
+ ( 6, 53)   coste 70   demanda 70
+ ( 7, 65)   coste 5   demanda 5
+ ( 12, 16)   coste 25   demanda 25
+ ( 12, 20)   coste 25   demanda 25
+ ( 13, 53)   coste 125   demanda 125
+ ( 17, 52)   coste 30   demanda 30
+ ( 17, 75)   coste 15   demanda 15
+ ( 18, 19)   coste 20   demanda 20
+ ( 18, 52)   coste 5   demanda 5
+ ( 19, 22)   coste 15   demanda 15
+ ( 20, 39)   coste 5   demanda 5
+ ( 20, 38)   coste 15   demanda 15
+ ( 21, 33)   coste 10   demanda 10
+ ( 22, 27)   coste 10   demanda 10
+ ( 27, 28)   coste 5   demanda 5
+ ( 27, 51)   coste 25   demanda 25
+ ( 28, 29)   coste 5   demanda 5
+ ( 28, 34)   coste 15   demanda 15
+ ( 29, 30)   coste 5   demanda 5
+ ( 29, 35)   coste 15   demanda 15
+ ( 30, 31)   coste 5   demanda 5
+ ( 30, 47)   coste 25   demanda 25
+ ( 31, 32)   coste 15   demanda 15
+ ( 31, 36)   coste 5   demanda 5
+ ( 32, 33)   coste 5   demanda 5
+ ( 32, 37)   coste 20   demanda 20
+ ( 33, 38)   coste 5   demanda 5
+ ( 34, 35)   coste 5   demanda 5
+ ( 34, 50)   coste 15   demanda 15
+ ( 35, 48)   coste 15   demanda 15
+ ( 35, 49)   coste 15   demanda 15
+ ( 36, 37)   coste 20   demanda 20
+ ( 36, 45)   coste 20   demanda 20
+ ( 37, 42)   coste 20   demanda 20
+ ( 38, 41)   coste 35   demanda 35
+ ( 39, 40)   coste 35   demanda 35
+ ( 39, 41)   coste 25   demanda 25
+ ( 40, 41)   coste 35   demanda 35
+ ( 41, 42)   coste 10   demanda 10
+ ( 42, 43)   coste 10   demanda 10
+ ( 43, 44)   coste 30   demanda 30
+ ( 43, 53)   coste 70   demanda 70
+ ( 44, 45)   coste 20   demanda 20
+ ( 44, 57)   coste 70   demanda 70
+ ( 45, 46)   coste 20   demanda 20
+ ( 45, 54)   coste 50   demanda 50
+ ( 46, 47)   coste 5   demanda 5
+ ( 46, 54)   coste 70   demanda 70
+ ( 47, 48)   coste 5   demanda 5
+ ( 47, 76)   coste 40   demanda 40
+ ( 48, 49)   coste 15   demanda 15
+ ( 49, 50)   coste 20   demanda 20
+ ( 49, 68)   coste 20   demanda 20
+ ( 50, 51)   coste 5   demanda 5
+ ( 51, 52)   coste 10   demanda 10
+ ( 53, 57)   coste 80   demanda 80
+ ( 54, 58)   coste 30   demanda 30
+ ( 54, 59)   coste 25   demanda 25
+ ( 55, 56)   coste 30   demanda 30
+ ( 55, 61)   coste 30   demanda 30
+ ( 55, 63)   coste 20   demanda 20
+ ( 56, 58)   coste 30   demanda 30
+ ( 1, 56)   coste 15   demanda 15
+ ( 1, 57)   coste 10   demanda 10
+ ( 57, 58)   coste 15   demanda 15
+ ( 58, 59)   coste 20   demanda 20
+ ( 59, 72)   coste 30   demanda 30
+ ( 60, 73)   coste 35   demanda 35
+ ( 61, 72)   coste 70   demanda 70
+ ( 61, 62)   coste 20   demanda 20
+ ( 62, 64)   coste 20   demanda 20
+ ( 63, 64)   coste 25   demanda 25
+ ( 64, 65)   coste 10   demanda 10
+ ( 68, 75)   coste 45   demanda 45
+ ( 68, 76)   coste 45   demanda 45
+ ( 69, 75)   coste 40   demanda 40
+ ( 69, 73)   coste 5   demanda 5
+ ( 70, 71)   coste 80   demanda 80
+ ( 71, 72)   coste 50   demanda 50
+ ( 71, 76)   coste 40   demanda 40
+ ( 73, 74)   coste 20   demanda 20
+ LISTA_ARISTAS_NOREQ :
+ ( 3, 9)   coste 10
+ ( 6, 11)   coste 30
+ ( 7, 8)   coste 25
+ ( 8, 67)   coste 15
+ ( 8, 10)   coste 5
+ ( 9, 10)   coste 5
+ ( 11, 66)   coste 30
+ ( 12, 15)   coste 120
+ ( 13, 14)   coste 40
+ ( 14, 15)   coste 10
+ ( 16, 20)   coste 10
+ ( 16, 21)   coste 20
+ ( 21, 23)   coste 5
+ ( 22, 26)   coste 10
+ ( 23, 24)   coste 10
+ ( 24, 25)   coste 5
+ ( 25, 26)   coste 5
+ ( 66, 67)   coste 80
+ ( 68, 70)   coste 40
+ ( 69, 77)   coste 40
+ ( 70, 77)   coste 20
+ ( 72, 78)   coste 80
+ DEPOSITO :   1

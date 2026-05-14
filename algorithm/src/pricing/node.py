@@ -738,8 +738,6 @@ class BnBNode:
     def solve_node(self, config: BnBConfig, incumbent_ub: float) -> NodeSolveResult:
         """Run column generation at this node until convergence/pruning."""
         self._active_config = config
-        self.apply_branch_constraints()
-        self._restore_lp_basis_if_any()
         self.solve_stats = {
             "cg_iterations": 0,
             "farkas_rounds": 0,
@@ -763,6 +761,7 @@ class BnBNode:
             "zero_add_iterations": 0,
             "hit_cg_iteration_limit": False,
             "hit_time_limit": False,
+            "pruned_before_cg": False,
         }
 
         def _accumulate_addcol_stats() -> None:
@@ -772,6 +771,35 @@ class BnBNode:
             self.solve_stats["columns_attempted_add"] += int(add_meta.get("attempted", 0))
             self.solve_stats["columns_skipped_duplicate"] += int(add_meta.get("skipped_duplicate", 0))
             self.solve_stats["columns_skipped_dominated"] += int(add_meta.get("skipped_dominated", 0))
+
+        def _is_pruned_by_bound(lp_value: Any) -> bool:
+            try:
+                ub = float(incumbent_ub)
+                lb = float(lp_value)
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(ub) or not math.isfinite(lb):
+                return False
+            return lb >= ub - config.eps_integrality
+
+        inherited_lb = getattr(self, "lower_bound", None)
+        if _is_pruned_by_bound(inherited_lb):
+            inherited_lb_f = float(inherited_lb)
+            self.status = NodeStatus.PRUNED
+            self.is_solved = True
+            self.is_integral = False
+            self.lp_obj_value = inherited_lb_f
+            self.lower_bound = inherited_lb_f
+            self.solve_stats["pruned_before_cg"] = True
+            return NodeSolveResult(
+                node_id=self.node_id,
+                status=self.status,
+                lower_bound=inherited_lb_f,
+                is_integral=False,
+            )
+
+        self.apply_branch_constraints()
+        self._restore_lp_basis_if_any()
 
         # ── Dual Stabilizer 초기화 ─────────────────────────────────────────
         stabilizer: Optional[DualStabilizer] = None

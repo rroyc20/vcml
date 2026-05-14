@@ -1,0 +1,51 @@
+ NOMBRE : A24C
+ COMENTARIO : Imported from rafaelmartinelli/CARPData.jl (unknown_ab); original bounds lb=176 ub=181
+ VERTICES : 24
+ ARISTAS_REQ : 37
+ ARISTAS_NOREQ : 2
+ VEHICULOS : 100
+ CAPACIDAD : 50
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 139
+ LISTA_ARISTAS_REQ :
+ ( 16, 17)   coste 4   demanda 7
+ ( 15, 19)   coste 4   demanda 1
+ ( 18, 19)   coste 3   demanda 7
+ ( 17, 18)   coste 4   demanda 5
+ ( 2, 17)   coste 3   demanda 1
+ ( 1, 2)   coste 4   demanda 8
+ ( 2, 3)   coste 4   demanda 1
+ ( 1, 3)   coste 6   demanda 1
+ ( 3, 6)   coste 7   demanda 6
+ ( 18, 20)   coste 3   demanda 6
+ ( 1, 20)   coste 4   demanda 9
+ ( 1, 4)   coste 3   demanda 1
+ ( 1, 9)   coste 4   demanda 3
+ ( 10, 20)   coste 3   demanda 4
+ ( 4, 5)   coste 2   demanda 7
+ ( 4, 7)   coste 4   demanda 4
+ ( 5, 6)   coste 3   demanda 5
+ ( 6, 7)   coste 5   demanda 8
+ ( 7, 8)   coste 5   demanda 7
+ ( 8, 9)   coste 3   demanda 1
+ ( 8, 11)   coste 4   demanda 2
+ ( 10, 11)   coste 4   demanda 3
+ ( 9, 10)   coste 3   demanda 6
+ ( 10, 14)   coste 4   demanda 6
+ ( 14, 15)   coste 3   demanda 6
+ ( 13, 15)   coste 6   demanda 5
+ ( 13, 14)   coste 3   demanda 3
+ ( 12, 13)   coste 2   demanda 1
+ ( 11, 12)   coste 3   demanda 3
+ ( 7, 21)   coste 4   demanda 1
+ ( 6, 21)   coste 4   demanda 3
+ ( 3, 22)   coste 4   demanda 5
+ ( 17, 24)   coste 3   demanda 6
+ ( 2, 24)   coste 3   demanda 6
+ ( 23, 24)   coste 5   demanda 3
+ ( 3, 23)   coste 3   demanda 4
+ ( 2, 23)   coste 3   demanda 9
+ LISTA_ARISTAS_NOREQ :
+ ( 15, 16)   coste 8
+ ( 11, 14)   coste 5
+ DEPOSITO :   1

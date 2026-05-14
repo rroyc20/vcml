@@ -55,6 +55,7 @@ class BatchCompareConfig:
     max_shared_edges_between_sri3: int = 1
     cut_root_only: int = 1
     cut_separation_max_depth: int | None = None
+    use_transformed_pricing_graph: int = 1
 
 
 def select_instance_paths(instance_dir: str, instances_csv: str, num_instances: int) -> List[str]:
@@ -75,7 +76,9 @@ def select_instance_paths(instance_dir: str, instances_csv: str, num_instances: 
 
 
 def run_existing_batch(config: BatchCompareConfig) -> List[Dict[str, Any]]:
+    import time as _time
     rows: List[Dict[str, Any]] = []
+    _batch_start = _time.perf_counter()
 
     for path in config.instance_paths:
         try:
@@ -87,7 +90,7 @@ def run_existing_batch(config: BatchCompareConfig) -> List[Dict[str, Any]]:
                 num_days=config.days,
                 schedule_mode=str(config.schedule_mode),
                 vehicles_override=config.vehicles_override,
-                max_nodes=config.max_nodes,
+                max_nodes=config.max_nodes if config.max_nodes > 0 else 999999,
                 max_cg_iterations_per_node=config.max_cg_iterations_per_node,
                 gurobi_output=config.gurobi_output,
                 arc_gurobi_output=config.arc_gurobi_output,
@@ -114,6 +117,7 @@ def run_existing_batch(config: BatchCompareConfig) -> List[Dict[str, Any]]:
                 phase1_col_cap=config.phase1_col_cap,
                 use_aggregation=int(config.use_aggregation),
                 yao_style_pricing=int(config.yao_style_pricing),
+                use_transformed_pricing_graph=int(config.use_transformed_pricing_graph),
                 use_sri_cuts=int(config.use_sri_cuts),
                 sri_cardinality=int(config.sri_cardinality),
                 enable_sri=int(config.enable_sri),
@@ -126,9 +130,13 @@ def run_existing_batch(config: BatchCompareConfig) -> List[Dict[str, Any]]:
                 max_shared_edges_between_sri3=int(config.max_shared_edges_between_sri3),
             )
             instance["use_capacity_cuts"] = int(config.use_capacity_cuts)
-            instance["use_sri_cuts"] = int(config.use_sri_cuts)
+            # SimpleSPMaster gates SRI via use_sri_cuts + use_cutting_plane_separation.
+            # Mirror enable_sri so both the aggregated and non-aggregated paths respect it.
+            _sri_on = int(config.enable_sri)
+            instance["use_sri_cuts"] = _sri_on
+            instance["use_cutting_plane_separation"] = _sri_on
             instance["sri_cardinality"] = int(config.sri_cardinality)
-            instance["enable_sri"] = int(config.enable_sri)
+            instance["enable_sri"] = _sri_on
             instance["root_only_sri"] = int(config.root_only_sri)
             instance["max_sri_rounds"] = int(config.max_sri_rounds)
             instance["max_cuts_per_round"] = int(config.max_cuts_per_round)
@@ -139,9 +147,21 @@ def run_existing_batch(config: BatchCompareConfig) -> List[Dict[str, Any]]:
             instance["cut_root_only"] = int(config.cut_root_only)
             if config.cut_separation_max_depth is not None:
                 instance["cut_separation_max_depth"] = int(config.cut_separation_max_depth)
+            instance["use_transformed_pricing_graph"] = int(config.use_transformed_pricing_graph)
         except Exception as exc:
             rows.append(_construction_failed_row(path, exc, config.skip_arc))
             continue
+
+        # Recompute remaining wall-clock budget so that instance loading time
+        # (model build, column init) counts against the total limit.
+        if config.alg_time_limit_s > 0:
+            _elapsed_so_far = _time.perf_counter() - _batch_start
+            _remaining = max(1.0, config.alg_time_limit_s - _elapsed_so_far)
+            instance["algorithm_time_limit_s"] = _remaining
+        if config.arc_time_limit_s > 0:
+            _elapsed_so_far = _time.perf_counter() - _batch_start
+            _remaining_arc = max(1.0, config.arc_time_limit_s - _elapsed_so_far)
+            instance["arc_time_limit_s"] = _remaining_arc
 
         arc_result, arc_time_s = _solve_arc_if_needed(instance, config)
         alg_result, alg_time_s, alg_error = _solve_algorithm(instance, config)
@@ -204,7 +224,9 @@ def _solve_arc_if_needed(instance: Dict[str, Any], config: BatchCompareConfig) -
         }, 0.0
 
     t0 = time.perf_counter()
-    result = solve_arc(instance=instance, time_limit=float(config.arc_time_limit_s))
+    # Use instance-level override if set (remaining budget), else fallback to config.
+    arc_tl = float(instance.get("arc_time_limit_s", config.arc_time_limit_s))
+    result = solve_arc(instance=instance, time_limit=arc_tl)
     t1 = time.perf_counter()
     return result, (t1 - t0)
 

@@ -1,0 +1,125 @@
+ NOMBRE : F11
+ COMENTARIO : Imported from rafaelmartinelli/CARPData.jl (beullens); original bounds lb=3835 ub=3835
+ VERTICES : 80
+ ARISTAS_REQ : 94
+ ARISTAS_NOREQ : 19
+ VEHICULOS : 100
+ CAPACIDAD : 600
+ TIPO_COSTES_ARISTAS : EXPLICITOS 
+ COSTE_TOTAL_REQ : 2820
+ LISTA_ARISTAS_REQ :
+ ( 2, 3)   coste 50   demanda 50
+ ( 2, 76)   coste 115   demanda 115
+ ( 3, 15)   coste 50   demanda 50
+ ( 3, 48)   coste 55   demanda 55
+ ( 3, 50)   coste 50   demanda 50
+ ( 4, 15)   coste 5   demanda 5
+ ( 4, 5)   coste 20   demanda 20
+ ( 4, 44)   coste 35   demanda 35
+ ( 5, 14)   coste 10   demanda 10
+ ( 5, 6)   coste 50   demanda 50
+ ( 6, 7)   coste 20   demanda 20
+ ( 6, 13)   coste 45   demanda 45
+ ( 7, 8)   coste 25   demanda 25
+ ( 7, 13)   coste 30   demanda 30
+ ( 7, 43)   coste 30   demanda 30
+ ( 8, 9)   coste 10   demanda 10
+ ( 8, 42)   coste 35   demanda 35
+ ( 9, 12)   coste 20   demanda 20
+ ( 9, 10)   coste 45   demanda 45
+ ( 10, 11)   coste 5   demanda 5
+ ( 10, 23)   coste 75   demanda 75
+ ( 11, 80)   coste 5   demanda 5
+ ( 11, 78)   coste 10   demanda 10
+ ( 12, 13)   coste 35   demanda 35
+ ( 20, 23)   coste 60   demanda 60
+ ( 20, 75)   coste 15   demanda 15
+ ( 20, 78)   coste 65   demanda 65
+ ( 21, 26)   coste 125   demanda 125
+ ( 22, 23)   coste 10   demanda 10
+ ( 22, 27)   coste 60   demanda 60
+ ( 22, 71)   coste 70   demanda 70
+ ( 23, 39)   coste 40   demanda 40
+ ( 23, 42)   coste 35   demanda 35
+ ( 24, 31)   coste 40   demanda 40
+ ( 24, 25)   coste 15   demanda 15
+ ( 24, 41)   coste 5   demanda 5
+ ( 24, 40)   coste 20   demanda 20
+ ( 25, 30)   coste 25   demanda 25
+ ( 25, 26)   coste 25   demanda 25
+ ( 26, 30)   coste 25   demanda 25
+ ( 27, 30)   coste 20   demanda 20
+ ( 28, 29)   coste 5   demanda 5
+ ( 28, 39)   coste 35   demanda 35
+ ( 40, 64)   coste 40   demanda 40
+ ( 41, 63)   coste 5   demanda 5
+ ( 42, 43)   coste 35   demanda 35
+ ( 43, 44)   coste 65   demanda 65
+ ( 44, 45)   coste 50   demanda 50
+ ( 45, 67)   coste 25   demanda 25
+ ( 45, 46)   coste 25   demanda 25
+ ( 1, 43)   coste 40   demanda 40
+ ( 1, 71)   coste 20   demanda 20
+ ( 46, 66)   coste 5   demanda 5
+ ( 46, 47)   coste 5   demanda 5
+ ( 47, 74)   coste 5   demanda 5
+ ( 47, 68)   coste 10   demanda 10
+ ( 47, 48)   coste 55   demanda 55
+ ( 48, 49)   coste 10   demanda 10
+ ( 49, 52)   coste 30   demanda 30
+ ( 49, 50)   coste 30   demanda 30
+ ( 50, 77)   coste 30   demanda 30
+ ( 51, 77)   coste 45   demanda 45
+ ( 52, 65)   coste 50   demanda 50
+ ( 52, 62)   coste 90   demanda 90
+ ( 53, 56)   coste 40   demanda 40
+ ( 54, 55)   coste 30   demanda 30
+ ( 55, 56)   coste 10   demanda 10
+ ( 55, 58)   coste 20   demanda 20
+ ( 56, 61)   coste 15   demanda 15
+ ( 57, 58)   coste 20   demanda 20
+ ( 58, 60)   coste 15   demanda 15
+ ( 58, 59)   coste 25   demanda 25
+ ( 60, 61)   coste 10   demanda 10
+ ( 60, 63)   coste 90   demanda 90
+ ( 61, 62)   coste 15   demanda 15
+ ( 62, 65)   coste 60   demanda 60
+ ( 63, 68)   coste 80   demanda 80
+ ( 64, 69)   coste 20   demanda 20
+ ( 64, 70)   coste 25   demanda 25
+ ( 65, 68)   coste 15   demanda 15
+ ( 66, 67)   coste 10   demanda 10
+ ( 66, 74)   coste 5   demanda 5
+ ( 67, 73)   coste 5   demanda 5
+ ( 68, 69)   coste 10   demanda 10
+ ( 69, 74)   coste 10   demanda 10
+ ( 69, 70)   coste 15   demanda 15
+ ( 70, 72)   coste 5   demanda 5
+ ( 70, 71)   coste 10   demanda 10
+ ( 71, 72)   coste 10   demanda 10
+ ( 72, 73)   coste 5   demanda 5
+ ( 73, 74)   coste 10   demanda 10
+ ( 76, 77)   coste 10   demanda 10
+ ( 78, 79)   coste 20   demanda 20
+ ( 78, 80)   coste 10   demanda 10
+ LISTA_ARISTAS_NOREQ :
+ ( 16, 17)   coste 10
+ ( 16, 21)   coste 65
+ ( 16, 29)   coste 35
+ ( 17, 18)   coste 5
+ ( 17, 36)   coste 15
+ ( 18, 20)   coste 50
+ ( 19, 21)   coste 40
+ ( 19, 33)   coste 25
+ ( 28, 36)   coste 15
+ ( 29, 30)   coste 65
+ ( 31, 35)   coste 15
+ ( 31, 32)   coste 100
+ ( 32, 33)   coste 10
+ ( 34, 35)   coste 10
+ ( 34, 38)   coste 80
+ ( 37, 53)   coste 30
+ ( 37, 54)   coste 25
+ ( 38, 59)   coste 70
+ ( 51, 53)   coste 40
+ DEPOSITO :   1
