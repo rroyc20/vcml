@@ -390,8 +390,6 @@ class InspectBnBNode(BnBNode):
         self._captured_branch_candidates = []
         self._captured_chosen_candidate = None
         self._active_config = config
-        self.apply_branch_constraints()
-        self._restore_lp_basis_if_any()
 
         self.solve_stats = {
             "cg_iterations": 0,
@@ -416,6 +414,7 @@ class InspectBnBNode(BnBNode):
             "zero_add_iterations": 0,
             "hit_cg_iteration_limit": False,
             "hit_time_limit": False,
+            "pruned_before_cg": False,
         }
 
         from src.pricing.node import DualStabilizer
@@ -426,6 +425,35 @@ class InspectBnBNode(BnBNode):
                 alpha_decay=float(config.dual_stab_alpha_decay),
                 min_alpha=float(config.dual_stab_min_alpha),
             )
+
+        def _is_pruned_by_bound(lp_value: Any) -> bool:
+            try:
+                ub = float(incumbent_ub)
+                lb = float(lp_value)
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(ub) or not math.isfinite(lb):
+                return False
+            return lb >= ub - config.eps_integrality
+
+        inherited_lb = getattr(self, "lower_bound", None)
+        if _is_pruned_by_bound(inherited_lb):
+            inherited_lb_f = float(inherited_lb)
+            self.status = NodeStatus.PRUNED
+            self.is_solved = True
+            self.is_integral = False
+            self.lp_obj_value = inherited_lb_f
+            self.lower_bound = inherited_lb_f
+            self.solve_stats["pruned_before_cg"] = True
+            return NodeSolveResult(
+                node_id=self.node_id,
+                status=self.status,
+                lower_bound=inherited_lb_f,
+                is_integral=False,
+            )
+
+        self.apply_branch_constraints()
+        self._restore_lp_basis_if_any()
 
         cg_iter = 0
         for _ in range(config.max_cg_iterations_per_node):

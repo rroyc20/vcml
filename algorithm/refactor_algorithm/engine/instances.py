@@ -193,22 +193,39 @@ def _build_regular_schedule_patterns(
     """
     Custom rule:
     - fixed group : decision group = 50 : 70 (normalized shares)
-    - fixed group: 항상 매일 방문 (frozenset(전체 기간)).
-    - decision group:
-      choose from equal-interval two-day visit patterns only
+    - fixed group : always visit all days (frozenset of all periods).
+    - decision group : choose from all valid equal-interval partial patterns,
+      i.e., every divisor k of N (2 ≤ k < N) gives patterns where k days are
+      visited at equal gap = N/k.  This means:
+        N=2 : no partial patterns  → fall back to all_days
+        N=4 : gap-2 patterns  {1,3}, {2,4}
+        N=6 : gap-3 (2-visit) {1,4},{2,5},{3,6}
+              gap-2 (3-visit) {1,3,5},{2,4,6}
     """
     days = [int(d) for d in periods]
-    if not days:
+    n = len(days)
+    if n == 0:
         raise ValueError("periods must be non-empty.")
+    if n % 2 != 0:
+        raise ValueError("regular schedule_mode requires an even number of days.")
 
     all_days_pat = frozenset(days)
-    if len(days) % 2 != 0:
-        raise ValueError("regular schedule_mode requires an even number of days.")
-    half = len(days) // 2
-    two_day_options = [
-        frozenset((days[start], days[start + half]))
-        for start in range(half)
-    ]
+
+    # Enumerate all valid equal-interval partial patterns (k visits, gap = n/k)
+    # Require k >= 2 and gap >= 2 so we never recreate the all-days pattern.
+    seen: set = set()
+    interval_options: List[frozenset] = []
+    for k in range(2, n):           # k = number of visits per cycle
+        if n % k != 0:
+            continue
+        gap = n // k
+        if gap < 2:                 # gap=1 would be all-days-like; skip
+            continue
+        for start_idx in range(gap):
+            pat = frozenset(days[start_idx::gap])
+            if len(pat) == k and pat not in seen:
+                seen.add(pat)
+                interval_options.append(pat)
 
     fixed_weight = 50.0
     decision_weight = 70.0
@@ -223,7 +240,7 @@ def _build_regular_schedule_patterns(
         if idx < num_fixed:
             out[e] = [all_days_pat]
         else:
-            out[e] = list(two_day_options) if two_day_options else [all_days_pat]
+            out[e] = list(interval_options) if interval_options else [all_days_pat]
     return out
 
 

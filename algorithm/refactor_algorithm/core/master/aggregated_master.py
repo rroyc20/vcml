@@ -56,11 +56,19 @@ from refactor_algorithm.core.master.compare_arc_vs_bnp import (
     discount_objective_cost_per_edge,
     path_arcs_travel_total,
 )
-from refactor_algorithm.core.master.separation import SeparationRoundResult
+from refactor_algorithm.core.master.separation import (
+    AggSRI3Separator,
+    SeparationManager,
+    SeparationRoundResult,
+)
 from refactor_algorithm.core.pricing.node import BnBConfig, BnBNode, BestBoundSelector, DepthFirstSelector
 from refactor_algorithm.core.master.compare_global_rmp_bnp import GlobalRMPBnBTree
 from refactor_algorithm.core.util.alns import run_alns_initial_solution
-from refactor_algorithm.core.util.initial_heuristic import add_cover_artificials, canon_edge
+from refactor_algorithm.core.util.initial_heuristic import (
+    add_cover_artificials,
+    build_q_load_aggregated_initial_columns,
+    canon_edge,
+)
 
 
 Edge = Tuple[int, int]
@@ -154,6 +162,12 @@ class AggregatedMaster:
         self._agg_col_tick: int = 0
         self._agg_constr_by_name: Dict[str, Any] = {}
         self._agg_var_by_name: Dict[str, Any] = {}
+        self._agg_lambda_alias_expr: Dict[str, Dict[str, float]] = {}
+        self._agg_lambda_alias_drivers: Dict[str, set[int]] = {}
+        self._fallback_route_exact_var_by_sig: Dict[Tuple[Any, ...], str] = {}
+        self._fallback_route_coeff_var_by_sig: Dict[Tuple[Any, ...], str] = {}
+        self._fallback_route_lookup_owner_id: Optional[int] = None
+        self._fallback_route_lookup_size: int = 0
         self._branch_arc_visit_expr: Dict[Tuple[Any, int], Dict[str, float]] = {}
         self._branch_node_visit_expr: Dict[Tuple[int, int], Dict[str, float]] = {}
         self._branch_ryan_foster_pair_expr: Dict[Tuple[Edge, Edge, int], Dict[str, float]] = {}
@@ -174,6 +188,17 @@ class AggregatedMaster:
 
         self._build_armp_model()
         self._add_initial_columns()
+
+        # A-RMP SRI-3 분리 관리자 (agg_lam 기반; enable_sri=1 일 때만 활성화)
+        self._armp_sri_manager: Optional[SeparationManager] = None
+        if bool(int(self.inst.get("enable_sri", self.inst.get("use_sri_cuts", 0)))):
+            _sri_card = int(self.inst.get("sri_cardinality", 3))
+            _sri_tol = float(self.inst.get("cut_separation_tol", 1e-7))
+            self._armp_sri_manager = SeparationManager(
+                separators=[AggSRI3Separator(cardinality=_sri_card)],
+                tol=_sri_tol,
+                max_rounds=1,
+            )
 
     # ── 공개 속성 ────────────────────────────────────────────────────────────
 
@@ -461,6 +486,10 @@ class AggregatedMaster:
                     if len(agg_key) >= 4 and agg_key[3] == int(day):
                         if agg_key[1] in served_set and agg_key[2] in served_set:
                             coeff = 1.0
+                elif kind == "ryan_foster_pair_avg":
+                    rf_days = agg_key[3] if len(agg_key) >= 4 else ()
+                    if int(day) in rf_days and agg_key[1] in served_set and agg_key[2] in served_set:
+                        coeff = 1.0 / float(len(rf_days)) if rf_days else 0.0
                 if coeff != 0.0:
                     col.addTerms(coeff, constr)
 
@@ -545,7 +574,35 @@ class AggregatedMaster:
             except Exception:
                 self.initial_incumbent = None
 
-        # Fallback: 필수 엣지마다 단일 서비스 경로
+        # q-load seed: pick one schedule pattern per edge, then pack each day's
+        # active edges into capacity-feasible route groups.
+        try:
+            qload_out = build_q_load_aggregated_initial_columns(
+                days=self.days,
+                required_edges=self.required_edges,
+                schedule_patterns=self.schedule_patterns,
+                demand=self.inst["demand"],
+                capacity=self.capacity,
+                num_vehicles=len(self.vehicles),
+                depot=self.depot,
+                edge_cost=self.travel_cost,
+            )
+        except Exception:
+            qload_out = {"columns": []}
+        seen_qload: set = set()
+        for col in qload_out.get("columns", []):
+            day = int(col["day"])
+            served = tuple(tuple(e) for e in col.get("serviced_required_edges", []))
+            arcs = tuple(tuple(a) for a in col.get("path_arcs", []))
+            if not served or not arcs:
+                continue
+            key = (day, served, arcs)
+            if key in seen_qload:
+                continue
+            seen_qload.add(key)
+            self._add_agg_route_var(day, list(served), list(arcs))
+
+        # Final safety net: 필수 엣지마다 단일 서비스 경로
         if not self.agg_route_columns:
             from refactor_algorithm.core.master.compare_arc_vs_bnp import _single_service_route
             for day in self.days:
@@ -662,20 +719,25 @@ class AggregatedMaster:
     def get_branching_data(self, *, include_route_lifting: bool = True) -> Dict[str, Any]:
         if not self._a_flag:
             assert self._fallback_rmp is not None
-            return self._fallback_rmp.get_branching_data(include_route_lifting=include_route_lifting)
+            data = self._fallback_rmp.get_branching_data(include_route_lifting=include_route_lifting)
+            data["aggregate_lambda_alias_expr"] = self._agg_lambda_alias_expr
+            return data
 
         # A-RMP: 집계 스케줄 q_{e,p} 만 (k-인덱스 분기용 표현 없음)
         edge_driver_assign_expr: Dict[Any, Dict[str, float]] = {}
         edge_day_driver_service_expr: Dict[Any, Dict[str, float]] = {}
         arc_visit_expr: Dict[Any, Dict[str, float]] = self._branch_arc_visit_expr if include_route_lifting else {}
         node_visit_expr: Dict[Any, Dict[str, float]] = self._branch_node_visit_expr if include_route_lifting else {}
-
+        schedule_pattern_sum_expr: Dict[Tuple[Edge, int], Dict[str, float]] = {
+            key: {vname: 1.0}
+            for key, vname in self.schedule_var_name.items()
+        }
         return {
             "branching_mode": "armp",
             "lambda_vars_by_day": {t: list(names) for t, names in self.agg_lambda_var_names_by_day.items()},
             "schedule_vars": self.schedule_var_name,
             "schedule_vars_by_edge_day": self._schedule_vars_by_edge_day,
-            "schedule_pattern_sum_expr": {},
+            "schedule_pattern_sum_expr": schedule_pattern_sum_expr,
             "edge_driver_assign_expr": edge_driver_assign_expr,
             "edge_day_driver_service_expr": edge_day_driver_service_expr,
             "node_visit_expr": node_visit_expr,
@@ -750,7 +812,19 @@ class AggregatedMaster:
             )
             self.sri_cuts_added += int(res.added_count)
             return res
-        return SeparationRoundResult()
+
+        # A-RMP 모드: 집계 SRI-3 컷 (Σ_{r: overlap≥2} agg_lam^t_r ≤ 1)
+        # 이 컷은 per-vehicle SRI-3 (SimpleSPMaster)를 k에 대해 합산한 것과 동등하며,
+        # A-RMP LP에서 위반될 수 있고 임의의 정수 가능해에서도 유효하다.
+        if self._armp_sri_manager is None:
+            return SeparationRoundResult()
+        if not bool(int(self.inst.get("enable_sri", self.inst.get("use_sri_cuts", 0)))):
+            return SeparationRoundResult()
+        if bool(int(self.inst.get("root_only_sri", 1))) and node_depth is not None and int(node_depth) > 0:
+            return SeparationRoundResult()
+        res = self._armp_sri_manager.separate_once(self, optimize_before=optimize_before)
+        self.sri_cuts_added += int(res.added_count)
+        return res
 
     def build_executable_solution(
         self,
@@ -1118,6 +1192,183 @@ class AggregatedMaster:
 
     # ── 표준 RMP로 전환 ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _find_fallback_var_for_col(
+        fallback: "SimpleSPMaster",
+        day: int,
+        driver: int,
+        serviced_edges: Sequence[Edge],
+        path_arcs: Sequence[Tuple[int, int]],
+    ) -> Optional[str]:
+        """_add_route_var가 None을 반환(duplicate/dominated)했을 때 fallback RMP에
+        이미 존재하는 동등한 변수의 이름을 찾아 반환한다.
+
+        탐색 순서:
+          1. Exact match: (day, driver, sorted_edges, path_arcs) 가 완전히 일치하는 컬럼
+          2. Coeff-sig match: 같은 (day, driver, sorted_edges, sorted_nonreq_used)를
+             가진 컬럼 — dominated 케이스에서 더 저렴한 대체 변수를 반환.
+        """
+        t, k = int(day), int(driver)
+        sorted_edges = tuple(sorted(_canon_edge(int(e[0]), int(e[1])) for e in serviced_edges))
+        path_tup = tuple(
+            (int(a[0]), int(a[1])) for a in path_arcs
+            if isinstance(a, (tuple, list)) and len(a) >= 2
+        )
+
+        # nonreq_used 계산 (SimpleSPMaster._add_route_var 와 동일한 로직)
+        req_set = fallback.required_edge_set
+        nonreq_set = fallback.nonrequired_edge_set
+        nonreq_target: frozenset = frozenset(
+            _canon_edge(int(a[0]), int(a[1]))
+            for a in path_arcs
+            if isinstance(a, (tuple, list)) and len(a) >= 2
+            and _canon_edge(int(a[0]), int(a[1])) not in req_set
+            and (not nonreq_set or _canon_edge(int(a[0]), int(a[1])) in nonreq_set)
+        )
+
+        coeff_match_vname: Optional[str] = None
+        for vname in fallback.lambda_var_names_by_day.get((t, k), []):
+            ridx = fallback.lambda_var_name_to_index.get(vname)
+            if ridx is None or ridx < 0 or ridx >= len(fallback.route_columns):
+                continue
+            rc = fallback.route_columns[ridx]
+            if int(rc.day) != t or int(rc.driver) != k:
+                continue
+            rc_sorted = tuple(
+                sorted(_canon_edge(int(e[0]), int(e[1])) for e in rc.serviced_required_edges)
+            )
+            if rc_sorted != sorted_edges:
+                continue
+            # (1) Exact match
+            if tuple(rc.path_arcs) == path_tup:
+                return vname
+            # (2) Coeff-sig match (dominated) — 첫 번째 발견값을 기억
+            if coeff_match_vname is None:
+                rc_nonreq = frozenset(rc.nonrequired_edges_used)
+                if rc_nonreq == nonreq_target:
+                    coeff_match_vname = vname
+
+        return coeff_match_vname
+
+    @staticmethod
+    def _fallback_exact_signature(
+        day: int,
+        driver: int,
+        serviced_edges: Sequence[Edge],
+        path_arcs: Sequence[Tuple[int, int]],
+    ) -> Tuple[Any, ...]:
+        return (
+            int(day),
+            int(driver),
+            tuple(sorted(_canon_edge(int(e[0]), int(e[1])) for e in serviced_edges)),
+            tuple(
+                (int(a[0]), int(a[1]))
+                for a in path_arcs
+                if isinstance(a, (tuple, list)) and len(a) >= 2
+            ),
+        )
+
+    @staticmethod
+    def _fallback_coeff_signature(
+        fallback: "SimpleSPMaster",
+        day: int,
+        driver: int,
+        serviced_edges: Sequence[Edge],
+        path_arcs: Sequence[Tuple[int, int]],
+    ) -> Tuple[Any, ...]:
+        req_set = fallback.required_edge_set
+        nonreq_set = fallback.nonrequired_edge_set
+        nonreq_target = tuple(
+            sorted(
+                {
+                    _canon_edge(int(a[0]), int(a[1]))
+                    for a in path_arcs
+                    if isinstance(a, (tuple, list))
+                    and len(a) >= 2
+                    and _canon_edge(int(a[0]), int(a[1])) not in req_set
+                    and (not nonreq_set or _canon_edge(int(a[0]), int(a[1])) in nonreq_set)
+                }
+            )
+        )
+        return (
+            int(day),
+            int(driver),
+            tuple(sorted(_canon_edge(int(e[0]), int(e[1])) for e in serviced_edges)),
+            nonreq_target,
+        )
+
+    def _reset_fallback_route_lookup(self) -> None:
+        self._fallback_route_exact_var_by_sig = {}
+        self._fallback_route_coeff_var_by_sig = {}
+        self._fallback_route_lookup_owner_id = None
+        self._fallback_route_lookup_size = 0
+
+    def _remember_fallback_route_var(
+        self,
+        fallback: "SimpleSPMaster",
+        vname: str,
+        *,
+        ridx: Optional[int] = None,
+    ) -> None:
+        if ridx is None:
+            ridx = fallback.lambda_var_name_to_index.get(vname)
+        if ridx is None or ridx < 0 or ridx >= len(fallback.route_columns):
+            return
+        rc = fallback.route_columns[ridx]
+        exact_sig = self._fallback_exact_signature(
+            rc.day,
+            rc.driver,
+            rc.serviced_required_edges,
+            rc.path_arcs,
+        )
+        coeff_sig = (
+            int(rc.day),
+            int(rc.driver),
+            tuple(sorted(_canon_edge(int(e[0]), int(e[1])) for e in rc.serviced_required_edges)),
+            tuple(sorted(rc.nonrequired_edges_used)),
+        )
+        self._fallback_route_exact_var_by_sig.setdefault(exact_sig, vname)
+        self._fallback_route_coeff_var_by_sig.setdefault(coeff_sig, vname)
+
+    def _sync_fallback_route_lookup(self, fallback: "SimpleSPMaster") -> None:
+        owner_id = id(fallback)
+        if self._fallback_route_lookup_owner_id != owner_id:
+            self._reset_fallback_route_lookup()
+            self._fallback_route_lookup_owner_id = owner_id
+        start = int(self._fallback_route_lookup_size)
+        total = len(fallback.route_columns)
+        if start > total:
+            self._reset_fallback_route_lookup()
+            self._fallback_route_lookup_owner_id = owner_id
+            start = 0
+        for ridx in range(start, total):
+            rc = fallback.route_columns[ridx]
+            vname = f"lam_t{int(rc.day)}_k{int(rc.driver)}_r{int(ridx)}"
+            self._remember_fallback_route_var(fallback, vname, ridx=ridx)
+        self._fallback_route_lookup_size = total
+
+    def _find_fallback_var_for_col_cached(
+        self,
+        fallback: "SimpleSPMaster",
+        day: int,
+        driver: int,
+        serviced_edges: Sequence[Edge],
+        path_arcs: Sequence[Tuple[int, int]],
+    ) -> Optional[str]:
+        self._sync_fallback_route_lookup(fallback)
+        exact_sig = self._fallback_exact_signature(day, driver, serviced_edges, path_arcs)
+        vname = self._fallback_route_exact_var_by_sig.get(exact_sig)
+        if vname is not None:
+            return vname
+        coeff_sig = self._fallback_coeff_signature(
+            fallback,
+            day,
+            driver,
+            serviced_edges,
+            path_arcs,
+        )
+        return self._fallback_route_coeff_var_by_sig.get(coeff_sig)
+
     def switch_to_rmp_mode(
         self,
         armp_solution: Optional[Dict[str, float]] = None,
@@ -1141,31 +1392,65 @@ class AggregatedMaster:
         fallback_inst["use_alns_initialization"] = 0  # 컬럼 재생성 방지
         fallback_inst["alns_replicate_all_contexts"] = 0
 
-        fallback = SimpleSPMaster(fallback_inst)
+        # Reuse existing fallback if available (preserves previously generated columns).
+        # A new SimpleSPMaster is created only on the first switch.
+        if self._fallback_rmp is not None:
+            fallback = self._fallback_rmp
+        else:
+            fallback = SimpleSPMaster(fallback_inst)
+            self._agg_lambda_alias_expr = {}
+            self._agg_lambda_alias_drivers = {}
+            self._reset_fallback_route_lookup()
 
         used_only = bool(int(self.inst.get("armp_switch_replicate_used_lambda_only", 1)))
         lam_eps = float(self.inst.get("armp_used_lambda_eps", 1e-6))
 
-        cols = list(self.agg_route_columns)
+        cols: List[Tuple[int, AggRouteColumn]] = list(enumerate(self.agg_route_columns))
         if used_only and isinstance(armp_solution, dict) and armp_solution:
-            picked: List[AggRouteColumn] = []
+            picked: List[Tuple[int, AggRouteColumn]] = []
             for ridx, col in enumerate(self.agg_route_columns):
                 vname = f"agg_lam_t{int(col.day)}_r{int(ridx)}"
                 if float(armp_solution.get(vname, 0.0)) > lam_eps:
-                    picked.append(col)
+                    picked.append((ridx, col))
             if picked:
                 cols = picked
 
+        self._sync_fallback_route_lookup(fallback)
         # A-RMP 컬럼 → SimpleSPMaster: (day, driver)별 lam
-        for col in cols:
+        for agg_ridx, col in cols:
+            agg_vname = f"agg_lam_t{int(col.day)}_r{int(agg_ridx)}"
+            alias_expr = self._agg_lambda_alias_expr.setdefault(agg_vname, {})
+            mapped_drivers = self._agg_lambda_alias_drivers.setdefault(agg_vname, set())
+            if len(mapped_drivers) >= len(self.vehicles):
+                continue
             for driver in self.vehicles:
-                fallback._add_route_var(
+                driver_int = int(driver)
+                if driver_int in mapped_drivers:
+                    continue
+                pre_idx = len(fallback.route_columns)
+                fallback_vname = f"lam_t{int(col.day)}_k{driver_int}_r{int(pre_idx)}"
+                v = fallback._add_route_var(
                     day=col.day,
-                    driver=driver,
+                    driver=driver_int,
                     serviced_edges=list(col.serviced_required_edges),
                     path_arcs=list(col.path_arcs),
                 )
+                if v is not None:
+                    alias_expr[fallback_vname] = alias_expr.get(fallback_vname, 0.0) + 1.0
+                    mapped_drivers.add(driver_int)
+                    self._remember_fallback_route_var(fallback, fallback_vname, ridx=pre_idx)
+                elif fallback._last_add_route_status in ("duplicate", "dominated"):
+                    # _add_route_var가 거부했지만 fallback에는 동등한/더 좋은 변수가
+                    # 이미 존재한다. 분기 제약이 전환 후 소실되지 않도록 그 변수를 alias에 등록.
+                    existing = self._find_fallback_var_for_col_cached(
+                        fallback, col.day, driver_int,
+                        col.serviced_required_edges, col.path_arcs,
+                    )
+                    if existing is not None:
+                        alias_expr[existing] = alias_expr.get(existing, 0.0) + 1.0
+                        mapped_drivers.add(driver_int)
         fallback.model.update()
+        self._fallback_route_lookup_size = len(fallback.route_columns)
 
         self._fallback_rmp = fallback
         self._a_flag = False

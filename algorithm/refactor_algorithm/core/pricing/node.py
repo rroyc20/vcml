@@ -165,6 +165,7 @@ class BranchCandidate:
     value: float
     day: Optional[int] = None
     driver: Optional[int] = None
+    sort_metric: Optional[float] = None
 
 
 BRANCH_MODE_ARMP = "armp"
@@ -175,6 +176,7 @@ ARMP_DAILY_ROUTE_FAMILY = "armp_daily_route"
 # A-RMP: 집계 스케줄 q_{e,p} = Σ_k s_{e,p,k} 에 대한 0/1 고정 (차량 인덱스 없음)
 ARMP_SCHEDULE_FIX_FAMILY = "armp_schedule_fix"
 ARMP_RYAN_FOSTER_FAMILY = "armp_ryan_foster_pair"
+ARMP_INCONSISTENT_RYAN_FOSTER_FAMILY = "armp_inconsistent_ryan_foster_pair"
 # 이전 명칭 호환
 ARMP_SCHEDULE_FAMILY = ARMP_SCHEDULE_FIX_FAMILY
 
@@ -182,6 +184,7 @@ RMP_WHOLE_ROUTE_FAMILY = "rmp_whole_route"
 RMP_DAILY_ROUTE_FAMILY = "rmp_daily_route"
 RMP_EDGE_SCHEDULE_ASSIGN_FAMILY = "rmp_edge_schedule_assign"
 RMP_RYAN_FOSTER_FAMILY = "rmp_ryan_foster_pair"
+RMP_INCONSISTENT_RYAN_FOSTER_FAMILY = "rmp_inconsistent_ryan_foster_pair"
 RMP_EDGE_DRIVER_ASSIGN_FAMILY = "rmp_edge_driver_assign"
 RMP_VISIT_NODE_FAMILY = "rmp_visit_node"
 RMP_VISIT_ARC_FAMILY = "rmp_visit_arc"
@@ -245,7 +248,15 @@ RYAN_FOSTER_BRANCH_FAMILIES = frozenset(
     {
         "ryan_foster_pair",
         ARMP_RYAN_FOSTER_FAMILY,
+        ARMP_INCONSISTENT_RYAN_FOSTER_FAMILY,
         RMP_RYAN_FOSTER_FAMILY,
+        RMP_INCONSISTENT_RYAN_FOSTER_FAMILY,
+    }
+)
+INCONSISTENT_RYAN_FOSTER_BRANCH_FAMILIES = frozenset(
+    {
+        ARMP_INCONSISTENT_RYAN_FOSTER_FAMILY,
+        RMP_INCONSISTENT_RYAN_FOSTER_FAMILY,
     }
 )
 
@@ -262,8 +273,10 @@ BINARY_LIKE_BRANCH_FAMILIES = frozenset(
         "edge_day_driver_service",
         ARMP_SCHEDULE_FIX_FAMILY,
         ARMP_RYAN_FOSTER_FAMILY,
+        ARMP_INCONSISTENT_RYAN_FOSTER_FAMILY,
         RMP_EDGE_SCHEDULE_ASSIGN_FAMILY,
         RMP_RYAN_FOSTER_FAMILY,
+        RMP_INCONSISTENT_RYAN_FOSTER_FAMILY,
         RMP_EDGE_DRIVER_ASSIGN_FAMILY,
         RMP_EDGE_DAY_DRIVER_SERVICE_FAMILY,
     }
@@ -306,6 +319,10 @@ def is_ryan_foster_branch_family(family: Any) -> bool:
     return str(family) in RYAN_FOSTER_BRANCH_FAMILIES
 
 
+def is_inconsistent_ryan_foster_branch_family(family: Any) -> bool:
+    return str(family) in INCONSISTENT_RYAN_FOSTER_BRANCH_FAMILIES
+
+
 def dist_to_nearest_integer(value: float) -> float:
     """Distance from x to the nearest integer (0 if x is almost integral)."""
     x = float(value)
@@ -336,6 +353,15 @@ def branch_candidate_sort_key(c: BranchCandidate) -> Tuple[Any, ...]:
     else:
         day_s = str(day_k)
     drv_k = c.driver
+    if is_ryan_foster_branch_family(fam):
+        metric = c.sort_metric
+        try:
+            metric_f = float(metric)
+        except (TypeError, ValueError):
+            metric_f = float("inf")
+        if not math.isfinite(metric_f):
+            metric_f = float("inf")
+        return (primary[0], primary[1], metric_f, fam, tgt_s, day_s, str(drv_k))
     return (primary[0], primary[1], fam, tgt_s, day_s, str(drv_k))
 
 
@@ -595,21 +621,27 @@ class BnBNode:
         - edge_day_driver_service(e,t,k) >= 1: keep only s[e,p,k] with t in pattern p
 
         A-RMP 집계 스케줄 q_{e,p} = Σ_k s_{e,p,k} 에 대한 고정은 ``schedule_fix`` / ``is_schedule_branch_family``
-        로 단일 변수 경계를 바꾸는 경로에서 처리한다.
+        로 단일 변수 경계를 바꾸는 경로에서 처리한다. 다만 A-RMP에서 schedule_fix가 걸린 뒤
+        표준 RMP로 전환된 경우에는 q_{e,p} 고정을 edge_schedule_assign(e,p)와 동치로 해석해
+        per-driver s_{e,p,k} 경계에 다시 전파한다.
         """
         family = str(getattr(bc, "family", ""))
         if not (
             is_edge_schedule_assign_branch_family(family)
             or is_edge_driver_assign_branch_family(family)
             or is_edge_day_driver_service_branch_family(family)
+            or is_schedule_branch_family(family)
         ):
             return False
 
         schedule_vars = data.get("schedule_vars", {})
         if not isinstance(schedule_vars, dict) or not schedule_vars:
             return False
-        # A-RMP 집계 스케줄 q_{e,p}: 키가 (e,p) 만 있으면 차량별 전파 불가 → 제약 행으로 처리
-        if not any(isinstance(sk, tuple) and len(sk) >= 3 for sk in schedule_vars):
+        has_driver_indexed_schedule = any(
+            isinstance(sk, tuple) and len(sk) >= 3 for sk in schedule_vars
+        )
+        # A-RMP 집계 스케줄 q_{e,p}: 키가 (e,p) 만 있으면 차량별 전파 불가 → 제약 행/단일변수 경계로 처리
+        if not has_driver_indexed_schedule:
             return False
 
         model = self._get_gurobi_model()
@@ -640,8 +672,14 @@ class BnBNode:
                     var.UB = 0.0
                     changed += 1
 
+        schedule_key = None
         if is_edge_schedule_assign_branch_family(family):
-            key = bc.target.get("edge_schedule_key") if isinstance(bc.target, dict) else bc.target
+            schedule_key = bc.target.get("edge_schedule_key") if isinstance(bc.target, dict) else bc.target
+        elif is_schedule_branch_family(family):
+            schedule_key = bc.target.get("schedule_key") if isinstance(bc.target, dict) else None
+
+        if schedule_key is not None:
+            key = schedule_key
             if not (isinstance(key, tuple) and len(key) >= 2):
                 return False
             req_id = self._canon_arc_key(key[0])
@@ -788,8 +826,6 @@ class BnBNode:
     def solve_node(self, config: BnBConfig, incumbent_ub: float) -> NodeSolveResult:
         """Run column generation at this node until convergence/pruning."""
         self._active_config = config
-        self.apply_branch_constraints()
-        self._restore_lp_basis_if_any()
         self.solve_stats = {
             "cg_iterations": 0,
             "rmp_time_s": 0.0,
@@ -816,6 +852,7 @@ class BnBNode:
             "sri_rounds": 0,
             "sri_cuts_added": 0,
             "sri_round_logs": [],
+            "pruned_before_cg": False,
         }
 
         def _accumulate_addcol_stats() -> None:
@@ -868,10 +905,30 @@ class BnBNode:
                 return False
             return lb >= ub - config.eps_integrality
 
+        inherited_lb = getattr(self, "lower_bound", None)
+        if _is_pruned_by_bound(inherited_lb):
+            inherited_lb_f = float(inherited_lb)
+            self.status = NodeStatus.PRUNED
+            self.is_solved = True
+            self.is_integral = False
+            self.lp_obj_value = inherited_lb_f
+            self.lower_bound = inherited_lb_f
+            self.solve_stats["pruned_before_cg"] = True
+            return NodeSolveResult(
+                node_id=self.node_id,
+                status=self.status,
+                lower_bound=inherited_lb_f,
+                is_integral=False,
+            )
+
+        self.apply_branch_constraints()
+        self._restore_lp_basis_if_any()
+
         # ── Dual Stabilizer 초기화 ─────────────────────────────────────────
         stabilizer: Optional[DualStabilizer] = _reset_stabilizer()
         sri_round = 0
         pending_sri_log: Optional[Dict[str, Any]] = None
+        _phase1_recovery_done = False  # Phase-I: LP infeasible due to hard branch constraints
 
         for _ in range(config.max_cg_iterations_per_node):
             if config.deadline_ts is not None and time.perf_counter() >= float(config.deadline_ts):
@@ -879,7 +936,32 @@ class BnBNode:
                 break
             self.solve_stats["cg_iterations"] += 1
             t0 = time.perf_counter()
-            lp_obj, dual_values = self.solve_rmp()
+            try:
+                lp_obj, dual_values = self.solve_rmp()
+            except RuntimeError as _rmp_exc:
+                # Phase-I recovery: LP infeasible due to hard branch constraints
+                # (RF ≥ 1, whole_route, daily_route addConstr) but column pool thin.
+                # Remove hard constraints, solve relaxed LP for pricing duals,
+                # then price to generate columns that satisfy the constraints.
+                if not _phase1_recovery_done:
+                    _relaxed = self._compute_relaxed_pricing_duals_for_phase1()
+                    if _relaxed is not None:
+                        _phase1_recovery_done = True
+                        t1p = time.perf_counter()
+                        pr_p1 = self.solve_subproblem(_relaxed, config)
+                        self.solve_stats["pricing_time_s"] += time.perf_counter() - t1p
+                        _meta_p1 = pr_p1.metadata if isinstance(pr_p1.metadata, dict) else {}
+                        self.solve_stats["columns_generated"] += int(
+                            _meta_p1.get("num_new_columns", len(pr_p1.new_columns))
+                        )
+                        if pr_p1.new_columns:
+                            t2p = time.perf_counter()
+                            _added_p1 = self.add_columns_to_rmp(pr_p1.new_columns)
+                            self.solve_stats["addcol_time_s"] += time.perf_counter() - t2p
+                            self.solve_stats["columns_added"] += int(_added_p1)
+                            if int(_added_p1) > 0:
+                                continue  # Retry LP with new columns
+                raise _rmp_exc
             self._capture_lp_basis()
             rmp_elapsed_total = time.perf_counter() - t0
             cut_sep_elapsed = float(
@@ -992,6 +1074,22 @@ class BnBNode:
                     is_integral=False,
                 )
 
+            art_sum = self._artificial_sum()
+            if art_sum > 1e-8:
+                # Cover artificials are a Phase-I safety net only. If CG converged
+                # without removing them, this node is infeasible for the original
+                # master and branching on its fractional pattern would be spurious.
+                self.status = NodeStatus.PRUNED
+                self.is_integral = False
+                self.is_solved = True
+                self.solve_stats["artificial_sum_at_integral"] = float(art_sum)
+                return NodeSolveResult(
+                    node_id=self.node_id,
+                    status=self.status,
+                    lower_bound=lp_obj,
+                    is_integral=False,
+                )
+
             fractional = self.extract_fractional_objects(config)
             if (
                 fractional
@@ -1047,28 +1145,14 @@ class BnBNode:
                         stabilizer = _reset_stabilizer()
                         continue
             if not fractional:
-                art_sum = self._artificial_sum()
-                if art_sum > 1e-8:
-                    # Artificial-positive solution is not feasible for original problem.
-                    self.status = NodeStatus.PRUNED
-                    self.is_integral = False
-                    self.is_solved = True
-                    self.solve_stats["artificial_sum_at_integral"] = float(art_sum)
-                    return NodeSolveResult(
-                        node_id=self.node_id,
-                        status=self.status,
-                        lower_bound=lp_obj,
-                        is_integral=False,
-                    )
-
                 # ── A-RMP → 표준 RMP 전환 훅 ─────────────────────────────
                 # 기본 정책:
-                #   A-RMP 에서 정수 feasible 해를 만나면, 그 해를 종결로 쓰지 않고
-                #   같은 branch 상태를 유지한 채 표준 SimpleSPMaster 로 전환한다.
-                #   이후 동일 node 에서 CG 를 다시 수행해 exact RMP 기준으로 판단한다.
-                #
-                # 선택적으로 inst["armp_integral_switch_to_rmp"]=0 이면
-                # 이전처럼 disaggregation MILP 를 시도하고, 실패 시에만 표준 RMP 로 전환한다.
+                #   A-RMP 에서 정수 feasible 해를 만나면 먼저 disaggregation MILP 로
+                #   exact RMP feasible incumbent 인지 확인한다.
+                #   - 성공: 해당 node 는 integral solution 을 획득한 것이므로
+                #           UB/incumbent 를 갱신하고 즉시 fathom 한다.
+                #   - 실패: 같은 branch 상태를 유지한 채 표준 SimpleSPMaster 로
+                #           전환해 exact RMP 기준으로 다시 판단한다.
                 _rmp = getattr(self, "rmp", None)
                 if (
                     _rmp is not None
@@ -1076,8 +1160,7 @@ class BnBNode:
                     and not getattr(self, "_agg_mode_switched", False)
                     and hasattr(_rmp, "switch_to_rmp_mode")
                 ):
-                    _switch_on_integral = bool(int(getattr(_rmp, "inst", {}).get("armp_integral_switch_to_rmp", 1)))
-                    _need_switch = _switch_on_integral
+                    _need_switch = False
                     _armp_vals: Dict[str, float] = {}
                     try:
                         _armp_vals = snapshot_var_values_by_name(
@@ -1086,7 +1169,7 @@ class BnBNode:
                         )
                     except Exception:
                         _armp_vals = {}
-                    if not _switch_on_integral and hasattr(_rmp, "try_disaggregate"):
+                    if hasattr(_rmp, "try_disaggregate"):
                         _dis_fn = getattr(_rmp, "try_disaggregate_verified", None)
                         if callable(_dis_fn):
                             _disagg = _dis_fn(_armp_vals)
@@ -1096,6 +1179,8 @@ class BnBNode:
                             setattr(self, "_disaggregated_solution", _disagg)
                         else:
                             _need_switch = True
+                    else:
+                        _need_switch = True
                     if _need_switch:
                         _rmp.switch_to_rmp_mode(_armp_vals)
                         setattr(self, "_agg_mode_switched", True)
@@ -1189,20 +1274,21 @@ class BnBNode:
                 is_integral=False,
             )
 
+        art_sum = self._artificial_sum()
+        if art_sum > 1e-8:
+            self.status = NodeStatus.PRUNED
+            self.is_integral = False
+            self.is_solved = True
+            self.solve_stats["artificial_sum_at_integral"] = float(art_sum)
+            return NodeSolveResult(
+                node_id=self.node_id,
+                status=self.status,
+                lower_bound=lp_obj,
+                is_integral=False,
+            )
+
         fractional = self.extract_fractional_objects(config)
         if not fractional and lp_obj < float("inf"):
-            art_sum = self._artificial_sum()
-            if art_sum > 1e-8:
-                self.status = NodeStatus.PRUNED
-                self.is_integral = False
-                self.is_solved = True
-                self.solve_stats["artificial_sum_at_integral"] = float(art_sum)
-                return NodeSolveResult(
-                    node_id=self.node_id,
-                    status=self.status,
-                    lower_bound=lp_obj,
-                    is_integral=False,
-                )
             self.status = NodeStatus.INTEGRAL
             self.is_integral = True
             self.is_solved = True
@@ -1239,13 +1325,45 @@ class BnBNode:
         data = self._get_branching_data(include_route_lifting=need_route_lift)
         use_ub_zero = bool(getattr(self, "_active_config", None) and getattr(self._active_config, "use_ub_zero_branching", False))
 
+        def extract_rf_day_keys(target: Any) -> List[Tuple[Any, Any, int]]:
+            rf_day_keys: List[Tuple[Any, Any, int]] = []
+            if isinstance(target, dict):
+                raw_keys = target.get("rf_pair_day_keys")
+                if isinstance(raw_keys, (list, tuple)):
+                    for raw_key in raw_keys:
+                        if isinstance(raw_key, tuple) and len(raw_key) >= 3:
+                            rf_day_keys.append((raw_key[0], raw_key[1], int(raw_key[2])))
+                raw_key = target.get("rf_pair_day_key")
+                if isinstance(raw_key, tuple) and len(raw_key) >= 3:
+                    rf_day_keys.append((raw_key[0], raw_key[1], int(raw_key[2])))
+            elif isinstance(target, tuple) and len(target) >= 3:
+                rf_day_keys.append((target[0], target[1], int(target[2])))
+            return rf_day_keys
+
+        def build_rf_average_expr(rf_day_keys: Sequence[Tuple[Any, Any, int]]):
+            if not rf_day_keys:
+                return None
+            weight = 1.0 / float(len(rf_day_keys))
+            expr = None
+            for rfk in rf_day_keys:
+                part = weight * self._build_linear_expr_from_map(
+                    data.get("ryan_foster_pair_expr", {}).get(rfk, {}),
+                    allow_empty_zero=True,
+                )
+                expr = part if expr is None else expr + part
+            return expr
+
         def build_expr_for_constraint(bc: BranchConstraint):
             family = str(bc.family)
             target = bc.target
 
             if family == "lambda_var":
                 var_ref = target.get("var_name") if isinstance(target, dict) else target
-                return self._resolve_model_var(var_ref)
+                var = self._resolve_model_var(var_ref)
+                if var is not None:
+                    return var
+                alias_expr = data.get("aggregate_lambda_alias_expr", {}).get(var_ref, {})
+                return self._build_linear_expr_from_map(alias_expr)
 
             if is_whole_route_branch_family(family):
                 lam = self._get_lambda_vars()
@@ -1306,7 +1424,10 @@ class BnBNode:
                 )
 
             if is_ryan_foster_branch_family(family):
-                key = target.get("rf_pair_day_key") if isinstance(target, dict) else target
+                rf_day_keys = extract_rf_day_keys(target)
+                if is_inconsistent_ryan_foster_branch_family(family) and len(rf_day_keys) > 1:
+                    return build_rf_average_expr(rf_day_keys)
+                key = rf_day_keys[0] if rf_day_keys else (target.get("rf_pair_day_key") if isinstance(target, dict) else target)
                 return self._build_linear_expr_from_map(
                     data.get("ryan_foster_pair_expr", {}).get(key, {})
                 )
@@ -1330,24 +1451,24 @@ class BnBNode:
                 continue
 
             if is_ryan_foster_branch_family(bc.family):
-                target = bc.target
-                rf_day_keys: List[Tuple[Any, Any, int]] = []
-                if isinstance(target, dict):
-                    raw_keys = target.get("rf_pair_day_keys")
-                    if isinstance(raw_keys, (list, tuple)):
-                        for raw_key in raw_keys:
-                            if isinstance(raw_key, tuple) and len(raw_key) >= 3:
-                                rf_day_keys.append((raw_key[0], raw_key[1], int(raw_key[2])))
-                    else:
-                        raw_key = target.get("rf_pair_day_key")
-                        if isinstance(raw_key, tuple) and len(raw_key) >= 3:
-                            rf_day_keys.append((raw_key[0], raw_key[1], int(raw_key[2])))
-                elif isinstance(target, tuple) and len(target) >= 3:
-                    rf_day_keys.append((target[0], target[1], int(target[2])))
-
+                rf_day_keys = extract_rf_day_keys(bc.target)
                 if rf_day_keys:
                     rmp = getattr(self, "rmp", None)
                     register = getattr(rmp, "register_aggregate_constr", None)
+                    if is_inconsistent_ryan_foster_branch_family(bc.family) and len(rf_day_keys) > 1:
+                        expr = build_rf_average_expr(rf_day_keys)
+                        if model.getConstrByName(cname) is None:
+                            if bc.sense == "<=":
+                                model.addConstr(expr <= float(bc.rhs), name=cname)
+                            elif bc.sense == ">=":
+                                model.addConstr(expr >= float(bc.rhs), name=cname)
+                            else:
+                                raise ValueError(f"Unsupported branch sense: {bc.sense}")
+                        if register is not None:
+                            e_i, e_j = rf_day_keys[0][0], rf_day_keys[0][1]
+                            rf_days = tuple(sorted({int(rfk[2]) for rfk in rf_day_keys}))
+                            register(("ryan_foster_pair_avg", e_i, e_j, rf_days), cname)
+                        continue
                     for rf_idx, rfk in enumerate(rf_day_keys):
                         sub_cname = cname if len(rf_day_keys) == 1 else f"{cname}_rf{rf_idx}"
                         if model.getConstrByName(sub_cname) is not None:
@@ -1441,6 +1562,52 @@ class BnBNode:
 
         model.update()
         self._branch_constraints_applied = True
+
+    def _compute_relaxed_pricing_duals_for_phase1(self) -> Optional[Dict[str, Any]]:
+        """Phase-I recovery for LP infeasibility caused by hard branch constraints.
+
+        When `solve_rmp()` returns infeasible (Gurobi status 3) because the column
+        pool cannot satisfy hard Gurobi constraints added by apply_branch_constraints
+        (RF ≥/≤ 1, whole_route ≥, daily_route ≥ etc.), we:
+          1. Temporarily remove this node's addConstr-based branch constraints.
+          2. Solve the relaxed LP (bound-based constraints like schedule_fix remain).
+          3. Re-apply the branch constraints via apply_branch_constraints().
+          4. Return the relaxed LP's duals for one pricing pass.
+
+        The pricing pass incentivised by coverage duals will generate routes that
+        may satisfy the branching constraints, unblocking the LP.
+        Returns None if even the relaxed LP is infeasible.
+        """
+        from gurobipy import GRB
+
+        model = self._get_gurobi_model()
+        prefix = f"branch_n{self.node_id}_"
+
+        hard_constrs = [c for c in model.getConstrs() if c.ConstrName.startswith(prefix)]
+        if not hard_constrs:
+            return None
+
+        for c in hard_constrs:
+            model.remove(c)
+        model.update()
+
+        model.optimize()
+        status = model.Status
+
+        if status == GRB.OPTIMAL:
+            duals: Dict[str, Any] = {
+                "constr_pi_by_name": snapshot_constr_pi_by_name(model),
+                "obj_value": float(model.ObjVal),
+                "model_status": status,
+                "cut_separation_time_s": 0.0,
+            }
+        else:
+            duals = None
+
+        self._branch_constraints_applied = False
+        self.apply_branch_constraints()
+
+        return duals
 
     def solve_rmp(self) -> Tuple[float, Dict[str, Any]]:
         """
@@ -2141,6 +2308,92 @@ class BnBNode:
 
         return {edge: frozenset(days) for edge, days in active_days.items()}
 
+    def _existing_ryan_foster_day_constraints(
+        self,
+    ) -> Dict[Tuple[Any, Any], Dict[int, BranchConstraint]]:
+        """Index already-applied RF constraints by pair/day.
+
+        This matters after A-RMP -> RMP switching: a pair may already have day-wise
+        RF branches inherited from aggregated mode. Re-branching the same pair with
+        a multi-day RF candidate can make both children contradictory immediately.
+        """
+        out: Dict[Tuple[Any, Any], Dict[int, BranchConstraint]] = {}
+        for bc in self.constraints:
+            if not is_ryan_foster_branch_family(getattr(bc, "family", "")):
+                continue
+            target = bc.target
+            day_keys: List[Tuple[Any, Any, int]] = []
+            if isinstance(target, dict):
+                raw_keys = target.get("rf_pair_day_keys")
+                if isinstance(raw_keys, (list, tuple)):
+                    for raw_key in raw_keys:
+                        if isinstance(raw_key, tuple) and len(raw_key) >= 3:
+                            day_keys.append((raw_key[0], raw_key[1], int(raw_key[2])))
+                raw_key = target.get("rf_pair_day_key")
+                if isinstance(raw_key, tuple) and len(raw_key) >= 3:
+                    day_keys.append((raw_key[0], raw_key[1], int(raw_key[2])))
+            elif isinstance(target, tuple) and len(target) >= 3:
+                day_keys.append((target[0], target[1], int(target[2])))
+
+            for e_i, e_j, t in day_keys:
+                out.setdefault((e_i, e_j), {})[int(t)] = bc
+        return out
+
+    def _required_edge_pair_distance(self, e_i: Any, e_j: Any) -> float:
+        """
+        Endpoint-min shortest-path distance between two required edges.
+
+        Used only as a Ryan-Foster tie-break: when candidates are equally
+        fractional, branch on geographically closer required-edge pairs first.
+        """
+        if not (isinstance(e_i, tuple) and len(e_i) >= 2 and isinstance(e_j, tuple) and len(e_j) >= 2):
+            return float("inf")
+
+        a = self._canon_arc_key(e_i)
+        b = self._canon_arc_key(e_j)
+        pair_key = (a, b) if str(a) <= str(b) else (b, a)
+
+        cache = getattr(self, "_rf_pair_distance_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_rf_pair_distance_cache", cache)
+        cached = cache.get(pair_key)
+        if cached is not None:
+            return float(cached)
+
+        rmp = getattr(self, "rmp", None)
+        inst = getattr(rmp, "inst", None)
+        travel_cost = getattr(rmp, "travel_cost", None)
+        if not isinstance(travel_cost, dict) and isinstance(inst, dict):
+            travel_cost = inst.get("travel_cost")
+        if not isinstance(travel_cost, dict):
+            cache[pair_key] = float("inf")
+            return float("inf")
+
+        def node_dist(u: Any, v: Any) -> float:
+            if u == v:
+                return 0.0
+            vals = (
+                travel_cost.get((u, v)),
+                travel_cost.get((v, u)),
+                travel_cost.get(self._canon_arc_key((u, v))),
+            )
+            best = float("inf")
+            for val in vals:
+                try:
+                    vf = float(val)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(vf) and vf < best:
+                    best = vf
+            return best
+
+        endpoints_i = (a[0], a[1])
+        endpoints_j = (b[0], b[1])
+        dist = min(node_dist(u, v) for u in endpoints_i for v in endpoints_j)
+        cache[pair_key] = float(dist)
+        return float(dist)
+
     def _collect_multiday_ryan_foster_candidates(
         self,
         data: Dict[str, Any],
@@ -2148,7 +2401,74 @@ class BnBNode:
         family: str,
         eps: float,
     ) -> List[BranchCandidate]:
-        """Group per-day RF expressions by edge pair and branch across all overlap days."""
+        """Collect day-wise Ryan-Foster candidates.
+
+        We intentionally branch on a single day at a time. The earlier
+        overlapping-days RF disjunction (`all common days together` vs
+        `all common days separate`) is not valid for the current master:
+        exact RMP incumbents can service the same pair together on one active
+        day and separately on another active day. Branching across all overlap
+        days therefore cuts feasible solutions, including the known 39088
+        incumbent structure on westjordan-S.
+        """
+        rf_exprs = data.get("ryan_foster_pair_expr", {})
+        if not isinstance(rf_exprs, dict) or not rf_exprs:
+            return []
+
+        existing_rf = self._existing_ryan_foster_day_constraints()
+
+        candidates: List[BranchCandidate] = []
+        for day_key in sorted(rf_exprs.keys(), key=str):
+            if not (isinstance(day_key, tuple) and len(day_key) >= 3):
+                continue
+            e_i, e_j, t = day_key[0], day_key[1], int(day_key[2])
+            prior_days = existing_rf.get((e_i, e_j), {})
+            if int(t) in prior_days:
+                continue
+
+            expr = rf_exprs.get(day_key, {})
+            if not isinstance(expr, dict) or not expr:
+                continue
+            value = float(self._expr_value(expr, self._resolve_model_var))
+            if not self._is_fractional(value, eps):
+                continue
+
+            candidates.append(
+                BranchCandidate(
+                    family=family,
+                    target={
+                        "rf_pair_edges": (e_i, e_j),
+                        "rf_pair_day_key": day_key,
+                        "rf_pair_day_keys": [day_key],
+                        "rf_pair_days": [t],
+                    },
+                    value=value,
+                    day=t,
+                    sort_metric=self._required_edge_pair_distance(e_i, e_j),
+                )
+            )
+
+        return candidates
+
+    def _collect_same_schedule_set_ryan_foster_candidates(
+        self,
+        data: Dict[str, Any],
+        *,
+        family: str,
+        eps: float,
+    ) -> List[BranchCandidate]:
+        """Collect multi-day RF candidates only for pairs with the exact same selected schedule set.
+
+        This is different from generic overlap RF. We only group days when two
+        required edges currently have the same selected active-day set S after
+        schedule fixing. Then the branch means:
+
+        - together child: the pair must be served together on every day in S
+        - separate child: the pair must be served separately on every day in S
+
+        That avoids the invalid "same on all overlap days" disjunction for
+        partially-overlapping schedules like {0,2} versus full-day {0,1,2,3}.
+        """
         rf_exprs = data.get("ryan_foster_pair_expr", {})
         if not isinstance(rf_exprs, dict) or not rf_exprs:
             return []
@@ -2156,6 +2476,7 @@ class BnBNode:
         active_days_by_edge = self._selected_service_days_by_edge(data, eps)
         if not active_days_by_edge:
             return []
+        existing_rf = self._existing_ryan_foster_day_constraints()
 
         pairs: set[Tuple[Any, Any]] = set()
         for key in rf_exprs.keys():
@@ -2164,19 +2485,24 @@ class BnBNode:
 
         candidates: List[BranchCandidate] = []
         for e_i, e_j in sorted(pairs, key=str):
-            overlap_days = sorted(active_days_by_edge.get(e_i, frozenset()) & active_days_by_edge.get(e_j, frozenset()))
-            if not overlap_days:
+            days_i = active_days_by_edge.get(e_i, frozenset())
+            days_j = active_days_by_edge.get(e_j, frozenset())
+            if not days_i or not days_j or days_i != days_j:
                 continue
 
-            day_keys = [(e_i, e_j, int(t)) for t in overlap_days]
+            schedule_days = sorted(int(t) for t in days_i)
+            prior_days = existing_rf.get((e_i, e_j), {})
+            if any(int(t) in prior_days for t in schedule_days):
+                continue
+
+            day_keys = [(e_i, e_j, int(t)) for t in schedule_days]
             values: List[float] = []
             for day_key in day_keys:
                 expr = rf_exprs.get(day_key, {})
                 if isinstance(expr, dict) and expr:
-                    val = float(self._expr_value(expr, self._resolve_model_var))
+                    values.append(float(self._expr_value(expr, self._resolve_model_var)))
                 else:
-                    val = 0.0
-                values.append(val)
+                    values.append(0.0)
 
             if not values:
                 continue
@@ -2186,10 +2512,101 @@ class BnBNode:
             if not has_fractional and span <= eps:
                 continue
 
+            family_name = family
             rep_value = float(sum(values) / len(values))
+            if not has_fractional and span > eps:
+                family_name = (
+                    ARMP_INCONSISTENT_RYAN_FOSTER_FAMILY
+                    if family == ARMP_RYAN_FOSTER_FAMILY
+                    else RMP_INCONSISTENT_RYAN_FOSTER_FAMILY
+                )
+                rep_value = 0.5
             candidates.append(
                 BranchCandidate(
-                    family=family,
+                    family=family_name,
+                    target={
+                        "rf_pair_edges": (e_i, e_j),
+                        "rf_pair_day_keys": day_keys,
+                        "rf_pair_days": schedule_days,
+                    },
+                    value=rep_value,
+                    day=schedule_days[0] if schedule_days else None,
+                    sort_metric=self._required_edge_pair_distance(e_i, e_j),
+                )
+            )
+
+        return candidates
+
+    def _collect_overlap_days_ryan_foster_candidates(
+        self,
+        data: Dict[str, Any],
+        *,
+        family: str,
+        eps: float,
+    ) -> List[BranchCandidate]:
+        """Collect multi-day RF candidates across all common active days.
+
+        This helper is intended for the full RMP where vehicle-indexed schedule
+        assignments `s_{e,p,k}` are explicit. In that model, once two required
+        edges are forced onto the same route on one common active day, the
+        chosen vehicle identity implies they must move together on every common
+        active day of their selected schedules.
+        """
+        rf_exprs = data.get("ryan_foster_pair_expr", {})
+        if not isinstance(rf_exprs, dict) or not rf_exprs:
+            return []
+
+        active_days_by_edge = self._selected_service_days_by_edge(data, eps)
+        if not active_days_by_edge:
+            return []
+        existing_rf = self._existing_ryan_foster_day_constraints()
+
+        pairs: set[Tuple[Any, Any]] = set()
+        for key in rf_exprs.keys():
+            if isinstance(key, tuple) and len(key) >= 3:
+                pairs.add((key[0], key[1]))
+
+        candidates: List[BranchCandidate] = []
+        for e_i, e_j in sorted(pairs, key=str):
+            overlap_days = sorted(
+                int(t) for t in (active_days_by_edge.get(e_i, frozenset()) & active_days_by_edge.get(e_j, frozenset()))
+            )
+            if not overlap_days:
+                continue
+
+            prior_days = existing_rf.get((e_i, e_j), {})
+            if any(int(t) in prior_days for t in overlap_days):
+                continue
+
+            day_keys = [(e_i, e_j, int(t)) for t in overlap_days]
+            values: List[float] = []
+            for day_key in day_keys:
+                expr = rf_exprs.get(day_key, {})
+                if isinstance(expr, dict) and expr:
+                    values.append(float(self._expr_value(expr, self._resolve_model_var)))
+                else:
+                    values.append(0.0)
+
+            if not values:
+                continue
+
+            has_fractional = any(self._is_fractional(val, eps) for val in values)
+            span = max(values) - min(values)
+            if not has_fractional and span <= eps:
+                continue
+
+            family_name = family
+            rep_value = float(sum(values) / len(values))
+            if not has_fractional and span > eps:
+                family_name = (
+                    ARMP_INCONSISTENT_RYAN_FOSTER_FAMILY
+                    if family == ARMP_RYAN_FOSTER_FAMILY
+                    else RMP_INCONSISTENT_RYAN_FOSTER_FAMILY
+                )
+                rep_value = 0.5
+            candidates.append(
+                BranchCandidate(
+                    family=family_name,
                     target={
                         "rf_pair_edges": (e_i, e_j),
                         "rf_pair_day_keys": day_keys,
@@ -2197,6 +2614,7 @@ class BnBNode:
                     },
                     value=rep_value,
                     day=overlap_days[0] if overlap_days else None,
+                    sort_metric=self._required_edge_pair_distance(e_i, e_j),
                 )
             )
 
@@ -3116,6 +3534,7 @@ class BnBNode:
             states_expanded = 0
             negative_found = 0
             existing_sig_filtered = 0
+            rb_delta_added = cut_pricing_state.rb_delta_added
 
             def _push_state(
                 new_mask: int,
@@ -3204,7 +3623,7 @@ class BnBNode:
                     if new_load > capacity + 1e-9:
                         continue
                     new_mask = mask | req_bit
-                    d_rb = cut_pricing_state.rb_delta(mask, new_mask, day_bit_to_req)
+                    d_rb = rb_delta_added(mask, req_bit)
                     _push_state(
                         new_mask,
                         nxt,
@@ -3226,6 +3645,38 @@ class BnBNode:
 
         _prof["pricing_prof_prep_s"] = time.perf_counter() - _prof_t0
 
+        # Pre-index aggregate_branch_constrs by day so build_cut_pricing_state
+        # skips the full O(|all_constrs|) scan every call.
+        # ryan_foster_pair stores the day at index 3; avg multi-day RF stores
+        # the tracked day set tuple at index 3; all others use index 1.
+        _agg_reg_all: Dict[tuple, str] = pricing_data.get("aggregate_branch_constrs") or {}
+        _preindexed_day_constrs: Dict[int, List[Tuple[tuple, str]]] = {}
+        _whole_route_constrs: List[Tuple[tuple, str]] = []
+        for _ak, _cn in _agg_reg_all.items():
+            if not isinstance(_ak, tuple) or not _ak:
+                continue
+            _akind = _ak[0]
+            if _akind == "whole_route":
+                _whole_route_constrs.append((_ak, _cn))
+            elif _akind == "ryan_foster_pair":
+                if len(_ak) >= 4:
+                    try:
+                        _preindexed_day_constrs.setdefault(int(_ak[3]), []).append((_ak, _cn))
+                    except (TypeError, ValueError):
+                        pass
+            elif _akind == "ryan_foster_pair_avg":
+                if len(_ak) >= 4 and isinstance(_ak[3], (list, tuple)):
+                    for _raw_day in _ak[3]:
+                        try:
+                            _preindexed_day_constrs.setdefault(int(_raw_day), []).append((_ak, _cn))
+                        except (TypeError, ValueError):
+                            continue
+            elif len(_ak) >= 2:
+                try:
+                    _preindexed_day_constrs.setdefault(int(_ak[1]), []).append((_ak, _cn))
+                except (TypeError, ValueError):
+                    pass
+
         for day_idx, day_ctx in enumerate(days):
             if partial_day_limit is not None and day_idx >= partial_day_limit and len(new_columns) > 0:
                 break
@@ -3243,6 +3694,12 @@ class BnBNode:
                     dual_values=dual_values,
                     pricing_data=pricing_data,
                 )
+            _day_id_for_idx = day_ctx[0] if isinstance(day_ctx, tuple) and len(day_ctx) >= 1 else day_ctx
+            try:
+                _day_int = int(_day_id_for_idx)
+                _preindexed_for_day = _whole_route_constrs + _preindexed_day_constrs.get(_day_int, [])
+            except (TypeError, ValueError):
+                _preindexed_for_day = None
             cut_pricing_state = build_cut_pricing_state(
                 day_ctx=day_ctx,
                 dual_values=dual_values,
@@ -3252,6 +3709,7 @@ class BnBNode:
                 max_rb_cuts=0,
                 mode=cut_pricing_mode,
                 dual_tol=cut_pricing_dual_tol,
+                preindexed_day_constrs=_preindexed_for_day,
             )
             route_cut_const = float(cut_pricing_state.route_constant)
             base_route_rc = -vehicle_dual + route_cut_const
@@ -3364,10 +3822,12 @@ class BnBNode:
                 sp_path = pre_full["sp_path"]
                 mu_in_sp = False
 
-            def _disc_seg(uu: Any, vv: Any) -> float:
-                if mu_in_sp:
+            if mu_in_sp:
+                def _disc_seg(uu: Any, vv: Any) -> float:
                     return 0.0
-                return _path_discount_between(uu, vv, discount_edge_duals)
+            else:
+                def _disc_seg(uu: Any, vv: Any) -> float:
+                    return _path_discount_between(uu, vv, discount_edge_duals)
 
             if effective_pricing_method == "cpp_ng":
                 _tcc = time.perf_counter()
@@ -3570,14 +4030,19 @@ class BnBNode:
                 states_generated = 1
                 existing_sig_filtered = 0
                 negative_found = 0
+                rb_delta_added = cut_pricing_state.rb_delta_added
 
+                _dp_inf = float("inf")
                 while pq_state:
                     cur_rc, _, mask, cur_node = heapq.heappop(pq_state)
                     key_cur = (mask, cur_node)
-                    if cur_rc > best_rc.get(key_cur, float("inf")) + dom_eps:
+                    if cur_rc > best_rc.get(key_cur, _dp_inf) + dom_eps:
                         continue
                     states_expanded += 1
                     cur_load = best_load.get(key_cur, 0.0)
+                    # Cache the SP-cost row for cur_node once; avoids repeated dict lookup
+                    # for every (req_id, svc_arc) combination in the inner loops.
+                    cur_sp_row = sp_cost.get(cur_node) or {}
 
                     for req_id, svc_arcs in day_req_service_arcs.items():
                         if req_id in forbidden_edges:
@@ -3585,26 +4050,28 @@ class BnBNode:
                         req_bit = day_req_to_bit.get(req_id, 0)
                         if req_bit == 0 or (mask & req_bit) != 0:
                             continue
+                        # Hoist out of the service-arc loop: constant per req_id.
+                        req_dual = edge_duals.get(req_id, 0.0)
+                        new_mask = mask | req_bit
+                        d_rb = rb_delta_added(mask, req_bit)
                         for svc_from, svc_to, svc_arc_id, svc_travel, demand, service_cost in svc_arcs:
                             new_load = cur_load + demand
                             if new_load > capacity + 1e-9:
                                 continue
-                            dead_cost = sp_cost.get(cur_node, {}).get(svc_from, float("inf"))
-                            if not math.isfinite(dead_cost):
+                            dead_cost = cur_sp_row.get(svc_from, _dp_inf)
+                            if dead_cost >= _dp_inf:
                                 continue
-                            new_mask = mask | req_bit
-                            d_rb = cut_pricing_state.rb_delta(mask, new_mask, day_bit_to_req)
                             new_rc = (
                                 cur_rc
                                 + dead_cost
                                 + svc_travel
                                 + service_cost
-                                - edge_duals.get(req_id, 0.0)
+                                - req_dual
                                 - _disc_seg(cur_node, svc_from)
                                 + d_rb
                             )
                             key_new = (new_mask, svc_to)
-                            if new_rc + dom_eps < best_rc.get(key_new, float("inf")):
+                            if new_rc + dom_eps < best_rc.get(key_new, _dp_inf):
                                 best_rc[key_new] = new_rc
                                 best_load[key_new] = new_load
                                 parent[key_new] = (mask, cur_node, svc_from, svc_arc_id)
@@ -3725,6 +4192,7 @@ class BnBNode:
                 heapq.heappush(fwd_queue, (fwd_rc[0], fwd_serial, 0))
                 fwd_serial += 1
 
+                _bidi_inf = float("inf")
                 while fwd_queue:
                     _, _, idx = heapq.heappop(fwd_queue)
                     cur_n = fwd_node[idx]
@@ -3737,28 +4205,33 @@ class BnBNode:
                     if cur_m > 0 and cur_n == depot:
                         continue
 
+                    # Cache SP-cost row for cur_n once per expanded label.
+                    fwd_sp_row = sp_cost.get(cur_n) or {}
+
                     for req_id, svc_arcs in day_req_service_arcs.items():
                         if req_id in forbidden_edges:
                             continue
                         req_bit = day_req_to_bit.get(req_id, 0)
                         if req_bit == 0 or (cur_m & req_bit):
                             continue
+                        # Hoist constants out of service-arc loop.
+                        req_dual = edge_duals.get(req_id, 0.0)
+                        new_m = cur_m | req_bit
                         for svc_from, svc_to, svc_arc_id, svc_trav, dem_v, sc_v in svc_arcs:
                             new_l = cur_l + dem_v
                             if new_l > half_cap + 1e-9:
                                 continue
-                            dh_c = sp_cost.get(cur_n, {}).get(svc_from, float("inf"))
-                            if not math.isfinite(dh_c):
+                            dh_c = fwd_sp_row.get(svc_from, _bidi_inf)
+                            if dh_c >= _bidi_inf:
                                 continue
                             new_r = (
                                 cur_r
                                 + dh_c
                                 + svc_trav
                                 + sc_v
-                                - edge_duals.get(req_id, 0.0)
+                                - req_dual
                                 - _disc_seg(cur_n, svc_from)
                             )
-                            new_m = cur_m | req_bit
 
                             key = (svc_to, new_m)
                             incumbents = fwd_nondom.get(key, [])
@@ -3818,23 +4291,27 @@ class BnBNode:
                         req_bit = day_req_to_bit.get(req_id, 0)
                         if req_bit == 0 or (cur_m & req_bit):
                             continue
+                        # Hoist constants out of service-arc loop.
+                        req_dual = edge_duals.get(req_id, 0.0)
+                        new_m = cur_m | req_bit
                         for svc_from, svc_to, svc_arc_id, svc_trav, dem_v, sc_v in svc_arcs:
                             new_l = cur_l + dem_v
                             if new_l > max_bwd_load + 1e-9:
                                 continue
-                            # Backward: deadhead from service endpoint to backward label node
-                            dh_c = sp_cost.get(svc_to, {}).get(cur_n, float("inf"))
-                            if not math.isfinite(dh_c):
+                            # Backward: deadhead from service endpoint to backward label node.
+                            # sp_cost.get(svc_to) varies per arc; avoid allocating a new empty
+                            # dict on every miss by using a pre-allocated sentinel.
+                            dh_c = (sp_cost.get(svc_to) or {}).get(cur_n, _bidi_inf)
+                            if dh_c >= _bidi_inf:
                                 continue
                             new_r = (
                                 cur_r
                                 + dh_c
                                 + svc_trav
                                 + sc_v
-                                - edge_duals.get(req_id, 0.0)
+                                - req_dual
                                 - _disc_seg(svc_to, cur_n)
                             )
-                            new_m = cur_m | req_bit
 
                             # New backward label at svc_from (service start in forward direction)
                             key = (svc_from, new_m)
@@ -4083,6 +4560,7 @@ class BnBNode:
             shortcut_returns = 0
             completion_bound_pruned = 0
             existing_sig_filtered = 0
+            rb_delta_added = cut_pricing_state.rb_delta_added
             # Safety-first default: keep fathoming off unless explicitly enabled.
             use_q_relaxed_fathoming = bool(pricing_data.get("use_q_relaxed_fathoming", False))
             if any(abs(float(v)) > 1e-12 for v in discount_edge_duals.values()):
@@ -4189,7 +4667,7 @@ class BnBNode:
                             continue
 
                         new_mask = cur_mask | req_bit
-                        d_rb = cut_pricing_state.rb_delta(cur_mask, new_mask, day_bit_to_req)
+                        d_rb = rb_delta_added(cur_mask, req_bit)
                         new_rc = (
                             cur_rc
                             + deadhead_cost
@@ -4366,10 +4844,9 @@ class BnBNode:
         1. whole_route   — Σ_{t,r} λ^t_r (집계 경로 질량)
         2. daily_route   — 일별 Σ_r λ^t_r
         3. schedule_fix  — 집계 스케줄 q_{e,p} = Σ_k s_{e,p,k} (차량 인덱스 없음, 패턴별 0/1 고정)
-        4. ryan_foster_pair — 같은 날 두 required edge를 같은 route가 함께 서비스하는지 분기
+        4. ryan_foster_pair / inconsistent_ryan_foster_pair
+           같은 선택 스케줄 셋을 가진 pair에 대해 그 스케줄의 모든 날에서 같이/따로 서비스
         5. lambda_var      — 개별 집계 경로 변수 agg_lam_t{t}_r* (0/1 고정)
-
-        SimpleSP와 분리한 이유: A-RMP는 일별 λ^t_r·집계 q_{e,p} 만 있고 per-(t,k) 분기 표현이 없음.
         """
         eps = config.eps_integrality
         lam_vars = self._get_lambda_vars()
@@ -4419,21 +4896,11 @@ class BnBNode:
         if level_schedule_fix:
             return level_schedule_fix
 
-        level_ryan_foster: List[BranchCandidate] = []
-        rf_exprs = data.get("ryan_foster_pair_expr", {})
-        if isinstance(rf_exprs, dict):
-            for key, expr in rf_exprs.items():
-                if not isinstance(expr, dict):
-                    continue
-                val = float(self._expr_value(expr, self._resolve_model_var))
-                if self._is_fractional(val, eps):
-                    day = int(key[2]) if isinstance(key, tuple) and len(key) >= 3 else None
-                    level_ryan_foster.append(BranchCandidate(
-                        family=ARMP_RYAN_FOSTER_FAMILY,
-                        target={"rf_pair_day_key": key},
-                        value=val,
-                        day=day,
-                    ))
+        level_ryan_foster = self._collect_same_schedule_set_ryan_foster_candidates(
+            data,
+            family=ARMP_RYAN_FOSTER_FAMILY,
+            eps=eps,
+        )
         if level_ryan_foster:
             return level_ryan_foster
 
@@ -4486,7 +4953,8 @@ class BnBNode:
           Level 6b whole_route              Σ_{t,k,r} λ^{tk}_r
           Level 6a daily_route              Σ_{k,r} λ^{tk}_r per day t
           Level 5a edge_schedule_assign    q_ep = Σ_k s_e^{pk}
-          Level 5  ryan_foster_pair       common active days 전체에 대해 같이/따로 서비스
+          Level 5  ryan_foster_pair / inconsistent_ryan_foster_pair
+                   common active days 전체에 대해 같이/따로 서비스
           Level 4  edge_driver_assign     z_ek = Σ_p s_e^{pk} (edge e served by vehicle k; no pattern branch)
           Level 3  visit_node             w_itk expression
           Level 2  visit_arc              x+y expression
@@ -4553,9 +5021,9 @@ class BnBNode:
             data = self._get_branching_data(include_route_lifting=True)
 
         # ------------------------------------------------------------------
-        # Level 5: multi-day Ryan-Foster pair consistency across all overlap days
+        # Level 5: Ryan-Foster consistency across all common active days
         # ------------------------------------------------------------------
-        level5 = self._collect_multiday_ryan_foster_candidates(
+        level5 = self._collect_overlap_days_ryan_foster_candidates(
             data,
             family=RMP_RYAN_FOSTER_FAMILY,
             eps=eps,

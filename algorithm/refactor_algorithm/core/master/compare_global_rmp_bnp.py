@@ -199,6 +199,17 @@ class GlobalRMPBnBTree(BnBTree):
                 model,
                 var_names=self._collect_bound_sensitive_var_names(node),
             )
+
+        # Pre-backup the fallback (SimpleSPMaster) model if it already exists.
+        # This guards against a mid-node A-RMP→RMP switch: if the active model
+        # changes during solve_node, we need to clean up BOTH models in finally.
+        _rmp_obj = getattr(node, "rmp", None)
+        _pre_fb_rmp = getattr(_rmp_obj, "_fallback_rmp", None)
+        _pre_fb_model = getattr(_pre_fb_rmp, "model", None) if _pre_fb_rmp is not None else None
+        _pre_fb_bounds: Dict[str, Tuple[float, float]] = {}
+        if _pre_fb_model is not None and _pre_fb_model is not model:
+            _pre_fb_bounds = self._backup_branch_var_bounds(_pre_fb_model)
+
         node_solution: Optional[Any] = None
 
         try:
@@ -224,6 +235,43 @@ class GlobalRMPBnBTree(BnBTree):
                 is_integral=False,
             )
         finally:
+            # Check whether the active Gurobi model changed during solve_node.
+            # This happens when A-RMP finds an integral solution and switches to
+            # SimpleSPMaster mid-node (switch_to_rmp_mode inside solve_node).
+            current_model = node._get_gurobi_model()
+            if current_model is not model:
+                # The new model had branch constraints applied to it inside
+                # solve_node (via apply_branch_constraints after the switch).
+                # Remove them now, otherwise they persist and contaminate all
+                # subsequent nodes that share this model.
+                self._remove_node_branch_constraints(current_model, node.node_id)
+
+                # Restore variable bounds on the new model.
+                # Case A: fallback existed before this node → restore from pre-backup.
+                # Case B: fallback was freshly created by switch_to_rmp_mode →
+                #   _apply_schedule_assignment_branch may have set UB=0 on s_* / lam_t* / z_*
+                #   variables that were [0,1] at construction time. Reset them.
+                if _pre_fb_bounds and current_model is _pre_fb_model:
+                    self._restore_branch_var_bounds(current_model, _pre_fb_bounds)
+                else:
+                    for v in current_model.getVars():
+                        vn = v.VarName
+                        if vn.startswith(("s_", "lam_t", "z_")):
+                            v.LB = 0.0
+                            v.UB = 1.0
+
+                current_model.update()
+
+                # Revert the A-RMP → RMP switch so that subsequent unrelated
+                # nodes in the open list continue using A-RMP.
+                # The switch is intentionally LOCAL to this node only.
+                # _fallback_rmp is kept in memory (its column pool can be reused
+                # if another node triggers a new switch later), but _a_flag=True
+                # makes the shared AggregatedMaster return _armp_model again.
+                _rmp_obj_sw = getattr(node, "rmp", None)
+                if _rmp_obj_sw is not None and hasattr(_rmp_obj_sw, "_a_flag"):
+                    _rmp_obj_sw._a_flag = True
+
             self._remove_node_branch_constraints(model, node.node_id)
             self._restore_branch_var_bounds(model, bounds_backup)
             model.update()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import gurobipy as gp
 from gurobipy import GRB
@@ -118,6 +118,157 @@ def greedy_initial_columns(
             )
 
     return cols
+
+
+def _pack_edges_by_capacity(
+    edges: Sequence[Edge],
+    demand: Dict[Edge, float],
+    capacity: float,
+) -> Tuple[List[List[Edge]], List[float]]:
+    """Best-fit decreasing packing for one day's required edges."""
+    groups: List[List[Edge]] = []
+    loads: List[float] = []
+    ordered = sorted(
+        (canon_edge(int(e[0]), int(e[1])) for e in edges),
+        key=lambda e: float(demand.get(e, 0.0)),
+        reverse=True,
+    )
+
+    for e in ordered:
+        de = float(demand.get(e, 0.0))
+        best_idx = -1
+        best_slack = float("inf")
+        for idx, load in enumerate(loads):
+            new_load = float(load) + de
+            slack = float(capacity) - new_load
+            if slack >= -1e-9 and slack < best_slack:
+                best_idx = idx
+                best_slack = slack
+        if best_idx < 0:
+            groups.append([e])
+            loads.append(de)
+            continue
+        groups[best_idx].append(e)
+        loads[best_idx] = float(loads[best_idx]) + de
+
+    return groups, loads
+
+
+def build_q_load_aggregated_initial_columns(
+    days: Sequence[int],
+    required_edges: Sequence[Edge],
+    schedule_patterns: Dict[Edge, List[frozenset[int]]],
+    demand: Dict[Edge, float],
+    capacity: float,
+    num_vehicles: int,
+    depot: int,
+    edge_cost: Dict[Edge, float],
+) -> Dict[str, Any]:
+    """
+    Build A-RMP seed columns from a q-load balancing heuristic.
+
+    Step 1: choose one pattern per required edge to balance day-wise aggregate load.
+    Step 2: for each day, pack active edges into capacity-feasible route groups.
+
+    The output gives a schedule-consistent root column scaffold for aggregated q_{e,p}.
+    """
+    if float(capacity) <= 0.0:
+        raise ValueError("capacity must be positive.")
+
+    day_ids = [int(t) for t in days]
+    req_edges = [canon_edge(int(e[0]), int(e[1])) for e in required_edges]
+    if not req_edges:
+        return {
+            "columns": [],
+            "selected_pattern_idx": {},
+            "day_loads": {int(t): 0.0 for t in day_ids},
+            "day_route_counts": {int(t): 0 for t in day_ids},
+            "packing_feasible": True,
+        }
+
+    vehicle_count = max(1, int(num_vehicles))
+    day_capacity = float(capacity) * float(vehicle_count)
+    q_load: Dict[int, float] = {int(t): 0.0 for t in day_ids}
+    selected_pattern_idx: Dict[Edge, int] = {}
+    active_edges_by_day: Dict[int, List[Edge]] = {int(t): [] for t in day_ids}
+
+    ordered_edges = sorted(
+        req_edges,
+        key=lambda e: (-float(demand.get(e, 0.0)), len(schedule_patterns.get(e, ())), e),
+    )
+
+    for e in ordered_edges:
+        pats = schedule_patterns.get(e) or [frozenset(day_ids)]
+        de = float(demand.get(e, 0.0))
+        best_idx = 0
+        best_score = None
+        for p_idx, pat in enumerate(pats):
+            pat_days = {int(t) for t in pat}
+            cand_loads = {
+                int(t): float(q_load[int(t)]) + (de if int(t) in pat_days else 0.0)
+                for t in day_ids
+            }
+            overflow = sum(max(0.0, load - day_capacity) for load in cand_loads.values())
+            denom = max(1.0, day_capacity)
+            max_ratio = max((load / denom) for load in cand_loads.values()) if cand_loads else 0.0
+            sq_ratio = sum((load / denom) ** 2 for load in cand_loads.values())
+            load_span = (
+                max(cand_loads.values()) - min(cand_loads.values()) if cand_loads else 0.0
+            )
+            score = (
+                float(overflow),
+                float(max_ratio),
+                float(sq_ratio),
+                float(load_span),
+                len(pat_days),
+                int(p_idx),
+            )
+            if best_score is None or score < best_score:
+                best_score = score
+                best_idx = int(p_idx)
+
+        selected_pattern_idx[e] = int(best_idx)
+        chosen_pat = pats[best_idx]
+        for t in chosen_pat:
+            t_int = int(t)
+            q_load[t_int] = float(q_load[t_int]) + de
+            active_edges_by_day.setdefault(t_int, []).append(e)
+
+    columns: List[Dict[str, Any]] = []
+    day_route_counts: Dict[int, int] = {int(t): 0 for t in day_ids}
+    packing_feasible = True
+
+    for t in day_ids:
+        groups, _loads = _pack_edges_by_capacity(
+            active_edges_by_day.get(int(t), ()),
+            demand=demand,
+            capacity=float(capacity),
+        )
+        day_route_counts[int(t)] = int(len(groups))
+        if len(groups) > vehicle_count:
+            packing_feasible = False
+        for group in groups:
+            if not group:
+                continue
+            columns.append(
+                {
+                    "day": int(t),
+                    "serviced_required_edges": list(group),
+                    "path_arcs": build_route_path_for_edges(
+                        depot=int(depot),
+                        serviced_edges=group,
+                        edge_cost=edge_cost,
+                    ),
+                }
+            )
+
+    return {
+        "columns": columns,
+        "selected_pattern_idx": selected_pattern_idx,
+        "day_loads": {int(t): float(q_load[int(t)]) for t in day_ids},
+        "day_route_counts": day_route_counts,
+        "packing_feasible": bool(packing_feasible),
+    }
 
 
 def add_cover_artificials(

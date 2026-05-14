@@ -666,6 +666,10 @@ class SimpleSPMaster:
                     if len(agg_key) >= 4 and agg_key[3] == t_int:
                         if agg_key[1] in served_set and agg_key[2] in served_set:
                             coeff = 1.0
+                elif kind == "ryan_foster_pair_avg":
+                    rf_days = agg_key[3] if len(agg_key) >= 4 else ()
+                    if t_int in rf_days and agg_key[1] in served_set and agg_key[2] in served_set:
+                        coeff = 1.0 / float(len(rf_days)) if rf_days else 0.0
                 if coeff != 0.0:
                     col.addTerms(coeff, constr)
 

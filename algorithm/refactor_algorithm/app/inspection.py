@@ -254,8 +254,6 @@ class InspectBnBNode(BnBNode):
         self._captured_branch_candidates = []
         self._captured_chosen_candidate = None
         self._active_config = config
-        self.apply_branch_constraints()
-        self._restore_lp_basis_if_any()
 
         self.solve_stats = {
             "cg_iterations": 0,
@@ -283,6 +281,7 @@ class InspectBnBNode(BnBNode):
             "sri_cuts_added": 0,
             "sri_round_logs": [],
             "sri_separation_time_s": 0.0,
+            "pruned_before_cg": False,
         }
 
         from refactor_algorithm.core.pricing.node import DualStabilizer
@@ -337,6 +336,25 @@ class InspectBnBNode(BnBNode):
             if not math.isfinite(ub) or not math.isfinite(lb):
                 return False
             return lb >= ub - config.eps_integrality
+
+        inherited_lb = getattr(self, "lower_bound", None)
+        if _is_pruned_by_bound(inherited_lb):
+            inherited_lb_f = float(inherited_lb)
+            self.status = NodeStatus.PRUNED
+            self.is_solved = True
+            self.is_integral = False
+            self.lp_obj_value = inherited_lb_f
+            self.lower_bound = inherited_lb_f
+            self.solve_stats["pruned_before_cg"] = True
+            return NodeSolveResult(
+                node_id=self.node_id,
+                status=self.status,
+                lower_bound=inherited_lb_f,
+                is_integral=False,
+            )
+
+        self.apply_branch_constraints()
+        self._restore_lp_basis_if_any()
 
         cg_iter = 0
         for _ in range(config.max_cg_iterations_per_node):
@@ -507,6 +525,24 @@ class InspectBnBNode(BnBNode):
                     is_integral=False,
                 )
 
+            art_sum = self._artificial_sum()
+            if art_sum > 1e-8:
+                # Cover artificials are only a Phase-I scaffold. If CG converged
+                # with positive artificials remaining, the original master is
+                # infeasible at this branch state, so we must prune instead of
+                # branching on the fractional Phase-I solution.
+                _inspect_print_sum_k_lambda_over_route(self)
+                self.status = NodeStatus.PRUNED
+                self.is_integral = False
+                self.is_solved = True
+                self.solve_stats["artificial_sum_at_integral"] = float(art_sum)
+                return NodeSolveResult(
+                    node_id=self.node_id,
+                    status=self.status,
+                    lower_bound=lp_obj,
+                    is_integral=False,
+                )
+
             fractional = self.extract_fractional_objects(config)
             if (
                 fractional
@@ -583,8 +619,7 @@ class InspectBnBNode(BnBNode):
                     and not getattr(self, "_agg_mode_switched", False)
                     and hasattr(_rmp, "switch_to_rmp_mode")
                 ):
-                    _switch_on_integral = bool(int(getattr(_rmp, "inst", {}).get("armp_integral_switch_to_rmp", 1)))
-                    _need_switch = _switch_on_integral
+                    _need_switch = False
                     _armp_vals: Dict[str, float] = {}
                     try:
                         _armp_vals = snapshot_var_values_by_name(
@@ -593,7 +628,7 @@ class InspectBnBNode(BnBNode):
                         )
                     except Exception:
                         _armp_vals = {}
-                    if not _switch_on_integral and hasattr(_rmp, "try_disaggregate"):
+                    if hasattr(_rmp, "try_disaggregate"):
                         _dis_fn = getattr(_rmp, "try_disaggregate_verified", None)
                         if callable(_dis_fn):
                             _disagg = _dis_fn(_armp_vals)
@@ -604,8 +639,11 @@ class InspectBnBNode(BnBNode):
                             self.solve_stats["disagg_result"] = "success"
                         else:
                             _need_switch = True
+                            self.solve_stats["disagg_result"] = "failed_switched"
+                    else:
+                        _need_switch = True
+                        self.solve_stats["disagg_result"] = "unavailable_switched"
                     if _need_switch:
-                        self.solve_stats["disagg_result"] = "integral_switched"
                         _rmp.switch_to_rmp_mode(_armp_vals)
                         setattr(self, "_agg_mode_switched", True)
                         self._branch_constraints_applied = False
@@ -619,8 +657,6 @@ class InspectBnBNode(BnBNode):
                         else:
                             stabilizer = None
                         continue
-                    elif not _switch_on_integral:
-                        self.solve_stats["disagg_result"] = "skipped"
                 else:
                     # A-RMP 모드 아님 (SimpleSPMaster 직접 정수해)
                     self.solve_stats["disagg_result"] = "not_applicable"
@@ -677,6 +713,20 @@ class InspectBnBNode(BnBNode):
             self.status = NodeStatus.PRUNED
             self.is_solved = True
             self.is_integral = False
+            return NodeSolveResult(
+                node_id=self.node_id,
+                status=self.status,
+                lower_bound=lp_obj_final,
+                is_integral=False,
+            )
+
+        art_sum = self._artificial_sum()
+        if art_sum > 1e-8:
+            _inspect_print_sum_k_lambda_over_route(self)
+            self.status = NodeStatus.PRUNED
+            self.is_integral = False
+            self.is_solved = True
+            self.solve_stats["artificial_sum_at_integral"] = float(art_sum)
             return NodeSolveResult(
                 node_id=self.node_id,
                 status=self.status,

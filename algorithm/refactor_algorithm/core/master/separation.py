@@ -466,6 +466,106 @@ class SRI3Separator(MasterSeparator):
         master.register_aggregate_constr(("sri3_t", int(t), subset_tuple), cut.cname)
         return True
 
+class AggSRI3Separator(SRI3Separator):
+    """SRI-3 separator for AggregatedMaster.
+
+    The A-RMP aggregates vehicle routes into agg_lam_t{t}_r{j} = Σ_k λ^{t,k}_r,
+    so the valid A-RMP SRI-3 cut is the vehicle-summed form:
+        Σ_{r: |{e∈S: a_{e,r}=1}| ≥ 2}  agg_lam^t_r  ≤  1
+    This is exactly the aggregation of the per-vehicle SRI-3 cut and is valid
+    because the original per-vehicle cut sums to ≤ 1 across all k.
+    """
+
+    def find_violated_cuts(self, master: Any, tol: float, var_cache: Dict[str, Any]) -> List[SeparatedCut]:
+        out: List[SeparatedCut] = []
+        if self.cardinality != 3:
+            return out
+
+        m = master.model
+        agg_names_by_day: Dict[int, List[str]] = getattr(master, "agg_lambda_var_names_by_day", {})
+        agg_cols = getattr(master, "agg_route_columns", [])
+        name_to_idx: Dict[str, int] = getattr(master, "agg_lambda_name_to_index", {})
+
+        for t in master.days:
+            day_routes: List[Tuple[float, Tuple[Any, ...]]] = []
+            active_edge_set: set = set()
+            for lname in agg_names_by_day.get(int(t), []):
+                lv = _lookup_var(master, lname, var_cache)
+                if lv is None:
+                    continue
+                lam_val = float(lv.X)
+                if lam_val <= tol:
+                    continue
+                ridx = name_to_idx.get(str(lname))
+                if ridx is None or ridx < 0 or ridx >= len(agg_cols):
+                    continue
+                route_col = agg_cols[ridx]
+                served = tuple(sorted(set(route_col.serviced_required_edges)))
+                if not served:
+                    continue
+                day_routes.append((lam_val, served))
+                active_edge_set.update(served)
+
+            active_edges = sorted(active_edge_set)
+            if len(active_edges) < 3 or not day_routes:
+                continue
+
+            for subset in combinations(active_edges, 3):
+                cname = (
+                    f"sri3_t{int(t)}_"
+                    f"{self._edge_token(subset[0])}__{self._edge_token(subset[1])}__{self._edge_token(subset[2])}"
+                )
+                if m.getConstrByName(cname) is not None:
+                    continue
+                lhs = self._subset_lhs(day_routes, subset)
+                if lhs > 1.0 + tol:
+                    out.append(
+                        SeparatedCut(
+                            key=("sri3_t", int(t), tuple(subset)),
+                            cname=cname,
+                            meta={
+                                "lhs": float(lhs),
+                                "rhs": 1.0,
+                                "violation": float(lhs - 1.0),
+                            },
+                        )
+                    )
+        return out
+
+    def add_cut(self, master: Any, cut: SeparatedCut, var_cache: Dict[str, Any]) -> bool:
+        m = master.model
+        if m.getConstrByName(cut.cname) is not None:
+            return False
+        key = cut.key
+        if not (isinstance(key, tuple) and len(key) == 3 and key[0] == "sri3_t"):
+            return False
+
+        _, t, subset = key
+        subset_tuple = tuple(subset)
+        subset_set = set(subset_tuple)
+        expr = gp.LinExpr()
+
+        agg_names_by_day: Dict[int, List[str]] = getattr(master, "agg_lambda_var_names_by_day", {})
+        agg_cols = getattr(master, "agg_route_columns", [])
+        name_to_idx: Dict[str, int] = getattr(master, "agg_lambda_name_to_index", {})
+
+        for lname in agg_names_by_day.get(int(t), []):
+            lv = _lookup_var(master, lname, var_cache)
+            if lv is None:
+                continue
+            ridx = name_to_idx.get(str(lname))
+            if ridx is None or ridx < 0 or ridx >= len(agg_cols):
+                continue
+            route_col = agg_cols[ridx]
+            overlap = sum(1 for e in subset_set if e in route_col.serviced_required_edges)
+            if overlap >= 2:
+                expr += lv
+
+        m.addConstr(expr <= 1.0, name=cut.cname)
+        master.register_aggregate_constr(("sri3_t", int(t), subset_tuple), cut.cname)
+        return True
+
+
 def _remove_separation_cuts(master: Any, m: Any, cnames: Sequence[str]) -> None:
     """Remove constraints by name and drop matching keys from aggregate_branch_constrs."""
     if not cnames:
